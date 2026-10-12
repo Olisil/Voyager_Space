@@ -8,15 +8,28 @@ sister of Voyager Earth, with the same UI components and project storage.
 - **Space observer** — pick a body and a date, set camera keypoints (scrub, frame the view, add a
   keypoint); the camera glides through them on a centripetal Catmull–Rom curve while the planets
   move along their real orbits.
-- **Vehicle path** — launch from a real spaceport (click it on the globe) or an automatic
-  equatorial site on the Moon or Mars, choose or edit a rocket, pick a destination and a scenario
-  in step 3 (a new project has no destination until then), and the flight is drawn as a white
-  line from the pad to the destination orbit.
+- **Vehicle path** — launch from a real spaceport (click it on the globe, where every spaceport
+  is named) or an automatic equatorial site on the Moon or Mars, choose or edit a rocket, pick a
+  destination and a scenario in step 3 (a new project has no destination until then), and the
+  flight is drawn as a white line from the pad to the destination orbit or landing site. A green
+  start-of-journey mark sits on the launch site while the journey is set up, and in the video
+  until the climb from the pad has been drawn out. The view can be
+  centred on the planet or on the spaceport itself (Start step); the spaceport view turns with
+  the ground.
+
+## The frame
+
+The video frame is shown inside the viewport with a semi-transparent passe-partout around it,
+and its proportion and pixel size above its top-left corner, as in Voyager Earth. The 3D view
+fills the whole viewport (setViewOffset), so the frame shows exactly what the video will.
 
 ## Camera
 
 - **Follow the craft** (vehicle path): rides along and pulls back as the craft leaves a planet;
-  dragging and zooming set the angle and distance kept through the flight.
+  dragging and zooming set the angle and distance kept through the flight. **Keep the camera
+  above the craft** (on by default): within a few radii of a body the camera is drawn up over the
+  craft (from the body's centre through the craft) and a little behind it, so the craft is never
+  hidden behind the body and the camera never ends up inside it.
 - **Keypoints**: each keypoint is a diamond above the timeline; drag it (or focus it and use the
   arrow keys) to change its time, click it to go there. In the Camera and Preview steps the view
   shows the keypoint move at the playhead; dragging or zooming the view takes it over (to frame a
@@ -46,13 +59,30 @@ brings them back. The version under the header comes from package.json (vite.con
   and max-Q comes from an exponential atmosphere. Launch time chosen within the day so the
   rocket flies as close to due east as the target plane allows. Ascent Δv: 9.4 km/s minus
   Earth's spin bonus (Moon 1.9, Mars 4.1).
+- Ascent from the Moon, Mercury and Mars: a lander pushing at a few times the local gravity,
+  as Apollo's ascent stage did, so the climb takes minutes and rises along an arc that levels off
+  into orbit far downrange (src/lib/ascent.ts).
 - Landing (optional): airless bodies by a descent-orbit burn and a powered descent (Apollo
-  profile); Earth, Mars and Venus by entry, parachutes and touchdown (Apollo, Perseverance,
-  Venera profiles) (src/lib/descent.ts).
+  profile) that brakes to a standstill on the spot it lands on. Earth, Mars and Venus by an
+  atmospheric entry integrated through a simple atmosphere (drag, a little lift, gravity, the
+  curve of the ground), then parachutes as they open on speed or height: Apollo's drogues and
+  mains into the sea, Perseverance's parachute and sky-crane descent, Venera's parachute and
+  hour-long fall to touch down at about 7 m/s (src/lib/descent.ts). Descents are flown relative
+  to the turning ground, so they meet it at the ground's own speed.
 - Display scale: planets drawn with radius ∝ √km; near a body distances are compressed with the
-  same √ curve, handing over smoothly to the parent's scale and to true scale further out
-  (src/lib/display.ts). Around a departure or arrival the path is drawn in that body's frame, so
-  orbits stay round and approaches come straight in; the cruise is drawn heliocentric.
+  same √ curve, handing over to the parent's scale and to true scale further out through a
+  smooth band that leaves both sides exact, so the craft sits exactly on the drawn pad and the
+  drawn landing site (src/lib/display.ts). Around a departure or arrival the path is drawn in
+  that body's frame, so orbits stay round and approaches come straight in; the cruise is drawn
+  heliocentric. The climb from the pad and the descent after touchdown turn with the ground.
+  Away from the Moon, Earth's picture keeps the Moon's neighbourhood where the craft left it (or
+  will reach it), so the path is not dragged along by the Moon's motion. The path is sampled
+  adaptively (tighter where it bends) and drawn relative to the craft, so it stays smooth even
+  close up in single-precision graphics.
+- Planet maps: 2K–4K maps load with the page; sharper 8K (Earth, Moon, Mars), 6K (Mercury) and
+  4K (Jupiter, Saturn, Sun) maps (src/assets/textures/hi, WebP where it is smaller) are fetched
+  only when the camera comes close enough to see the difference, and dropped again when it
+  leaves. Video export waits for them.
 - HUD: speed relative to the body the craft is around (ground-relative during launch and
   landing, the Sun's frame in the cruise), altitude or distance to go, mission clock, the
   flight's events on a sliding timeline, date and time (src/lib/hud.ts).

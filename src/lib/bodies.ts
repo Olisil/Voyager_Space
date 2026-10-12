@@ -94,8 +94,12 @@ export function compress(id: BodyId, distKm: number, boost = 1): number {
   const x = Math.max(0, distKm - R) / R;
   return Rd * (1 + 1.4 * (Math.sqrt(x + SOFT * SOFT) - SOFT));
 }
-/** softening of the √ near the surface (in body radii, squared ≈ 30 km for Earth) */
-export const SOFT = 0.07;
+/**
+ * Softening of the √ near the surface (body radii). Low down the map is close to linear, with
+ * heights only ~3× exaggerated, so a climb to orbit or a descent to the ground keeps the
+ * shape of the real thing instead of shooting straight up from the pad.
+ */
+export const SOFT = 0.22;
 /** a body-centred vector in km → display offset (AU) */
 export function compressVec(id: BodyId, vKm: V3, boost = 1): V3 {
   const d = len(vKm);

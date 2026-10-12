@@ -2956,3 +2956,51 @@ select.input.is-empty optgroup {
     padding-top: 40px;
   }
 }
+
+/* ================= v0.4 ================= */
+/* The 3D view fills the stage. The video frame is a window in a grey passe-partout that dims
+   the view around it (as in Voyager Earth), with its shape and pixel size above the corner. */
+.stage-area {
+  display: block;
+  overflow: hidden;
+  --passe-partout: rgba(34, 35, 38, 0.62);
+  --frame-label: rgba(255, 255, 255, 0.82);
+}
+html:not(.dark-mode) .stage-area {
+  --passe-partout: rgba(96, 99, 106, 0.5);
+  --frame-label: rgba(255, 255, 255, 0.95);
+}
+.stage-area > .space-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.stage-area > .frame {
+  position: absolute;
+  z-index: 2;
+  overflow: visible;
+  background: none;
+  pointer-events: none;
+  outline: var(--stroke--hairline) solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 200vmax var(--passe-partout);
+}
+.stage-area > .frame.is-rendering {
+  outline: var(--stroke--default) solid var(--accent);
+}
+.frame-size {
+  position: absolute;
+  left: 0;
+  bottom: 100%;
+  margin-bottom: 4px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.02em;
+  color: var(--frame-label);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  user-select: none;
+}
+.stage-note {
+  pointer-events: auto;
+}

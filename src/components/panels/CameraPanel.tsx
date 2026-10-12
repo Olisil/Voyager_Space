@@ -5,7 +5,7 @@ import { ColorPicker, Field, Section, Segmented, Slider, Toggle } from "../Contr
 import { Tip } from "../Tip";
 import type { Up } from "./StartPanel";
 
-export const targetName = (t: LookTarget) => (t === "vehicle" ? "The craft" : BODIES[t].name);
+export const targetName = (t: LookTarget) => (t === "vehicle" ? "The craft" : t === "site" ? "The launch site" : BODIES[t].name);
 
 export function CameraPanel(props: {
   project: Project;
@@ -28,7 +28,7 @@ export function CameraPanel(props: {
   const kps = [...c.keypoints].sort((a, b) => a.t - b.t);
   const here = kps.find((k) => Math.abs(k.t - props.t) < 0.05);
   const setLook = (patch: Partial<Project["look"]>) => update((p) => ({ ...p, look: { ...p.look, ...patch } }));
-  const looks: LookTarget[] = [...(vehicle ? (["vehicle"] as LookTarget[]) : []), ...BODY_IDS];
+  const looks: LookTarget[] = [...(vehicle ? (["vehicle", "site"] as LookTarget[]) : []), ...BODY_IDS];
   return (
     <>
       <header className="panel-intro">
@@ -68,6 +68,12 @@ export function CameraPanel(props: {
           >
             Reset angle and zoom
           </button>
+          <Toggle
+            label="Keep the camera above the craft"
+            hint="Close to a planet or moon the camera stays on the far side of the craft from its centre, so the craft is never hidden behind it and the camera never dips inside."
+            checked={c.above}
+            onChange={(v) => update((p) => ({ ...p, camera: { ...p.camera, above: v } }))}
+          />
         </>
       )}
       {usesKeypoints && !props.noFlight && (

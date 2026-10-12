@@ -1,21 +1,36 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { BODY_IDS, displayRadius, type V3 } from "../lib/bodies";
-import { cameraAt, defaultOffset, followDir, followFrame, targetPos, vehicleAt, type CameraCtx } from "../lib/camera";
+import { BODY_IDS, bodyBasis, displayPos, displayRadius, type V3 } from "../lib/bodies";
+import {
+  aboveFrame,
+  applyAbove,
+  cameraAt,
+  defaultOffset,
+  followDir,
+  followFrame,
+  sitePos,
+  startAlpha,
+  surfacePos,
+  targetPos,
+  unapplyAbove,
+  vehicleAt,
+  type CameraCtx,
+} from "../lib/camera";
 import type { Mission } from "../lib/mission";
-import { drawOverlay } from "../lib/overlay";
+import { add, cross, dot, mul, norm, sub, unit } from "../lib/orbits";
+import { drawOverlay, type Rect } from "../lib/overlay";
 import { SpaceScene, texturesReady } from "../lib/scene";
 import { dateAt, frameWeights, simAt, type Timeline } from "../lib/timeline";
-import { SPACEPORTS as SPACEPORT_LIST, type LookTarget, type Project } from "../lib/types";
+import { siteOf, SPACEPORTS, type LookTarget, type Project } from "../lib/types";
 
 export interface StageHandle {
   /**
-   * The view as a keypoint would keep it: what it looks at (the body or craft nearest to the
-   * point the view turns around) and the camera's place relative to that, at this moment.
+   * The view as a keypoint would keep it: what it looks at (the body, craft or launch site
+   * nearest to the point the view turns around) and the camera's place relative to that, now.
    */
   currentView: () => { target: LookTarget; offset: V3 };
-  /** Look at a body (or the craft) from a pleasant angle. Over a keypoint move, the user takes the view. */
+  /** Look at a body (or the craft, or the launch site) from a pleasant angle. Over a keypoint move, the user takes the view. */
   frameBody: (b: LookTarget) => void;
 }
 
@@ -46,9 +61,13 @@ export const Stage = forwardRef<
     onFollowChange?: (f: Follow) => void;
     focus: LookTarget;
     showSpaceports: boolean;
+    /** the start-of-journey symbol: always (first steps), as in the video, or not at all */
+    startSymbol: "always" | "video" | "never";
     onPickSpaceport?: (id: string) => void;
+    /** the canvas fills the stage; the video frame is a window in it */
     width: number;
     height: number;
+    frame: Rect;
   }
 >(function Stage(props, ref) {
   const glRef = useRef<HTMLCanvasElement>(null);
@@ -67,12 +86,38 @@ export const Stage = forwardRef<
   // keypoints mode: the user has the view and turns it around `grabFocus`
   const grabbed = useRef(false);
   const grabFocus = useRef<LookTarget | null>(null);
+  // a view of the launch site turns with the ground: the camera's offset in the body's own axes
+  const siteRel = useRef<V3 | null>(null);
 
   const ctxOf = (p: typeof props) => ({ project: p.project, mission: p.mission, tl: p.tl });
   const focusAt = (p: typeof props, f: LookTarget) => new THREE.Vector3(...targetPos(ctxOf(p), f, p.t));
-  const focusRadius = (p: typeof props, f: LookTarget) => (f === "vehicle" ? displayRadius("moon", p.project.look.planetSize) * 0.05 : displayRadius(f, p.project.look.planetSize));
+  const focusRadius = (p: typeof props, f: LookTarget) => {
+    const boost = p.project.look.planetSize;
+    if (f === "vehicle") return displayRadius("moon", boost) * 0.05;
+    if (f === "site") return displayRadius(p.project.start.body, boost) * 0.02;
+    return displayRadius(f, boost);
+  };
   const offsetFor = (p: typeof props, f: LookTarget): V3 => {
-    if (f !== "vehicle") return defaultOffset(f, p.project.look.planetSize, dateAt(p.tl, p.t));
+    const boost = p.project.look.planetSize;
+    const date = dateAt(p.tl, p.t);
+    if (f === "site") {
+      // from above the site, leaning a little towards the Sun, so the ground is lit when it can be
+      const b = p.project.start.body;
+      const c = displayPos(b, date, boost);
+      const up = unit(sub(sitePos(p.project, date), c));
+      const toSun = norm(c) > 0 ? unit(mul(c, -1)) : up;
+      const lean = sub(toSun, mul(up, dot(toSun, up)));
+      const dir = unit(add(up, norm(lean) > 1e-6 ? mul(unit(lean), 0.45) : [0, 0, 0]));
+      return mul(dir, displayRadius(b, boost) * 0.9);
+    }
+    if (f === p.project.start.body && p.project.mode === "vehicle") {
+      // the starting body: from the side of the launch site, leaning towards the Sun
+      const c = displayPos(f, date, boost);
+      const up = unit(sub(sitePos(p.project, date), c));
+      const toSun = norm(c) > 0 ? unit(mul(c, -1)) : up;
+      return mul(unit(add(up, mul(toSun, 0.5))), displayRadius(f, boost) * 6);
+    }
+    if (f !== "vehicle") return defaultOffset(f, boost, date);
     const fr = followFrame(ctxOf(p), p.t);
     const dir = followDir(ctxOf(p), p.t);
     const d = fr?.dist ?? 0.05;
@@ -81,9 +126,10 @@ export const Stage = forwardRef<
   /** what the free view turns around */
   const freeFocus = (p: typeof props): LookTarget => (grabbed.current && grabFocus.current) || p.focus;
   const posing = (p: typeof props) => p.camMode === "keypoints" && !grabbed.current;
-  /** the body or craft nearest to a point of the scene, now */
+  /** the body, craft or launch site nearest to a point of the scene, now */
   const nearest = (p: typeof props, at: THREE.Vector3): LookTarget => {
-    const candidates: LookTarget[] = p.project.mode === "vehicle" && vehicleAt(ctxOf(p), p.t) ? ["vehicle", ...BODY_IDS] : [...BODY_IDS];
+    const vehicle = p.project.mode === "vehicle";
+    const candidates: LookTarget[] = [...(vehicle && vehicleAt(ctxOf(p), p.t) ? (["vehicle"] as LookTarget[]) : []), ...(vehicle ? (["site"] as LookTarget[]) : []), ...BODY_IDS];
     let best: LookTarget = p.focus;
     let bestD = Infinity;
     for (const f of candidates) {
@@ -95,17 +141,30 @@ export const Stage = forwardRef<
     }
     return best;
   };
+  /** the launch site's own axes now (east, north, up), turning with the body */
+  const basisOf = (p: typeof props) => {
+    const b = p.project.start.body;
+    const date = dateAt(p.tl, p.t);
+    const c = displayPos(b, date, p.project.look.planetSize);
+    const up = unit(sub(sitePos(p.project, date), c));
+    const axes = bodyBasis(b, date);
+    let east = cross(axes.z, up);
+    if (norm(east) < 1e-9) east = axes.x;
+    east = unit(east);
+    return { up, east, north: cross(up, east) };
+  };
 
   const draw = () => {
     const s = space.current;
     if (!s) return;
     const p = latest.current;
     const date = dateAt(p.tl, p.t);
+    const boost = p.project.look.planetSize;
     const vehicleMode = p.project.mode === "vehicle" && !!p.mission?.ok;
     const sim = vehicleMode ? simAt(p.tl, p.t) : null;
     s.update({
       date,
-      boost: p.project.look.planetSize,
+      boost,
       sim,
       mission: p.project.mode === "vehicle" ? p.mission : null,
       look: p.project.look,
@@ -123,7 +182,9 @@ export const Stage = forwardRef<
       }
       const st = followState.current;
       st.dist = frame.dist;
-      const dir = st.dir ?? followDir(ctxOf(p), p.t);
+      let dir = st.dir ?? followDir(ctxOf(p), p.t);
+      const above = aboveFrame(ctxOf(p), p.t);
+      if (above) dir = applyAbove(dir, above);
       c.enablePan = false;
       c.minDistance = frame.dist * 0.08;
       c.maxDistance = frame.dist * 40;
@@ -132,6 +193,7 @@ export const Stage = forwardRef<
       s.camera.position.set(frame.target[0] + dir[0] * d, frame.target[1] + dir[1] * d, frame.target[2] + dir[2] * d);
       s.camera.lookAt(c.target);
       lastTarget.current = null;
+      siteRel.current = null;
     } else if (posing(p)) {
       // the move at this moment; the controls stay live so a drag can take over
       c.enablePan = true;
@@ -143,64 +205,87 @@ export const Stage = forwardRef<
       c.target.set(...pose.target);
       s.camera.lookAt(c.target);
       lastTarget.current = null;
+      siteRel.current = null;
     } else {
       // free: keep up with the focus as time moves
       const f = freeFocus(p);
       c.enablePan = true;
       c.maxDistance = Infinity;
       const tgt = focusAt(p, f);
-      if (lastTarget.current) s.camera.position.add(tgt.clone().sub(lastTarget.current));
+      if (f === "site") {
+        // the launch site turns with the ground, and so does the view of it
+        const ax = basisOf(p);
+        if (siteRel.current) {
+          const r = siteRel.current;
+          s.camera.position.copy(tgt).add(new THREE.Vector3(...add(add(mul(ax.east, r[0]), mul(ax.north, r[1])), mul(ax.up, r[2]))));
+        } else if (lastTarget.current) s.camera.position.add(tgt.clone().sub(lastTarget.current));
+      } else if (lastTarget.current) s.camera.position.add(tgt.clone().sub(lastTarget.current));
       c.target.copy(tgt);
       lastTarget.current = tgt.clone();
       // never inside the body, and no jump when a keypoint view starts closer than that
       c.minDistance = Math.min(focusRadius(p, f) * 1.15, s.camera.position.distanceTo(tgt) * 0.999);
       c.update();
+      if (f === "site") {
+        // stay above the local horizon
+        const ax = basisOf(p);
+        const rel = s.camera.position.clone().sub(tgt);
+        const len = rel.length();
+        const r: V3 = [rel.x / len, rel.y / len, rel.z / len];
+        const e = dot(r, ax.up);
+        const minE = Math.sin((6 * Math.PI) / 180);
+        if (e < minE) {
+          let h = sub(r, mul(ax.up, e));
+          h = norm(h) > 1e-9 ? unit(h) : ax.east;
+          const fixed = add(mul(h, Math.sqrt(1 - minE * minE)), mul(ax.up, minE));
+          s.camera.position.copy(tgt).add(new THREE.Vector3(...mul(fixed, len)));
+          s.camera.lookAt(tgt);
+        }
+        const o = s.camera.position.clone().sub(tgt);
+        const ov: V3 = [o.x, o.y, o.z];
+        siteRel.current = [dot(ov, ax.east), dot(ov, ax.north), dot(ov, ax.up)];
+      } else siteRel.current = null;
     }
     applying.current = false;
+    s.updateDetail();
     s.render();
-    // labels, HUD and date
+    // labels, spaceports, start symbol, HUD and date
     const ov = ovRef.current!;
     const g = ov.getContext("2d")!;
     const dpr = window.devicePixelRatio || 1;
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, ov.width, ov.height);
-    const ports =
-      p.showSpaceports && p.project.start.body === "earth"
-        ? (() => {
-            const e = s.nodes.get("earth")!;
-            const site = p.project.start.site;
-            const out: { id: string; x: number; y: number }[] = [];
-            const m = e.spin.matrixWorld;
-            const port = (lat: number, lon: number) => {
-              const la = (lat * Math.PI) / 180;
-              const lo = (lon * Math.PI) / 180;
-              return new THREE.Vector3(1.004 * Math.cos(la) * Math.cos(lo), 1.004 * Math.sin(la), -1.004 * Math.cos(la) * Math.sin(lo)).applyMatrix4(m);
-            };
-            for (const sp of SPACEPORT_LIST) {
-              if (sp.id !== site) continue;
-              const w = port(sp.lat, sp.lon);
-              const scr = s.project([w.x, w.y, w.z]);
-              // hide it when it is on the far side of the globe
-              const toCam = s.camera.position.clone().sub(w);
-              const normal = w.clone().sub(e.group.position).normalize();
-              if (scr && toCam.dot(normal) > 0) out.push({ id: sp.id, ...scr });
-            }
-            return out;
-          })()
-        : undefined;
+    const site = p.project.start.site;
+    let ports: { id: string; name: string; x: number; y: number }[] | undefined;
+    if (p.showSpaceports && p.project.start.body === "earth") {
+      const ec = displayPos("earth", date, boost);
+      ports = [];
+      for (const sp of SPACEPORTS) {
+        if (sp.id === site) continue;
+        const scr = s.surfaceToScreen(ec, surfacePos("earth", sp.lat, sp.lon, date, boost, 1.004));
+        if (scr) ports.push({ id: sp.id, name: sp.name, ...scr });
+      }
+    }
+    let start: { x: number; y: number; name: string; alpha: number } | null = null;
+    const alpha = p.project.mode !== "vehicle" ? 0 : p.startSymbol === "always" ? 1 : p.startSymbol === "video" ? startAlpha(ctxOf(p), p.t) : 0;
+    if (alpha > 0) {
+      const scr = s.surfaceToScreen(displayPos(p.project.start.body, date, boost), sitePos(p.project, date, 1.002));
+      if (scr) start = { ...scr, name: siteOf(p.project).name, alpha };
+    }
     const labelFocus = frame || posing(p) ? null : freeFocus(p);
     drawOverlay(g, {
       scene: s,
       date,
-      boost: p.project.look.planetSize,
+      boost,
       width: p.width,
       height: p.height,
+      frame: p.frame,
       scale: dpr,
       labels: p.project.look.labels,
       dateStamp: p.project.look.dateStamp,
       credit: null,
-      spaceports: { show: p.showSpaceports, selected: p.project.start.site, positions: ports },
-      focus: labelFocus === "vehicle" ? null : labelFocus,
+      ports,
+      start,
+      focus: labelFocus === "vehicle" || labelFocus === "site" ? null : labelFocus,
       hud: vehicleMode && p.project.look.hud && p.mission ? { mission: p.mission, tl: p.tl, t: p.t, date, showDate: p.project.look.dateStamp } : null,
     });
   };
@@ -223,6 +308,7 @@ export const Stage = forwardRef<
     controls.current!.target.copy(target);
     s.camera.lookAt(target);
     lastTarget.current = target.clone();
+    siteRel.current = null;
     request();
   };
 
@@ -254,6 +340,7 @@ export const Stage = forwardRef<
   useEffect(() => {
     const s = new SpaceScene(glRef.current!);
     space.current = s;
+    s.onDetail = () => request();
     const c = new OrbitControls(s.camera, glRef.current!);
     c.enableDamping = false;
     c.zoomSpeed = 1.2;
@@ -267,6 +354,7 @@ export const Stage = forwardRef<
       const tgt = focusAt(p, best);
       c.target.copy(tgt);
       lastTarget.current = tgt.clone();
+      siteRel.current = null;
       c.minDistance = Math.min(focusRadius(p, best) * 1.15, s.camera.position.distanceTo(tgt) * 0.999);
       c.maxDistance = Infinity;
       grab(best);
@@ -274,14 +362,17 @@ export const Stage = forwardRef<
     c.addEventListener("change", () => {
       // the user turned or zoomed the follow camera: keep that angle and distance
       const st = followState.current;
-      if (!applying.current && st && latest.current.camMode === "follow") {
+      const p = latest.current;
+      if (!applying.current && st && p.camMode === "follow") {
         const o = s.camera.position.clone().sub(c.target);
         const len = o.length();
         if (len > 0 && st.dist > 0) {
-          const before = st.dir ?? followDir(ctxOf(latest.current), latest.current.t);
+          const above = aboveFrame(ctxOf(p), p.t);
+          const raw = st.dir ?? followDir(ctxOf(p), p.t);
+          const before = above ? applyAbove(raw, above) : raw;
           const now: V3 = [o.x / len, o.y / len, o.z / len];
           // a zoom alone keeps the automatic angle; turning the view fixes the angle
-          if (st.dir || Math.abs(now[0] - before[0]) + Math.abs(now[1] - before[1]) + Math.abs(now[2] - before[2]) > 1e-4) st.dir = now;
+          if (st.dir || Math.abs(now[0] - before[0]) + Math.abs(now[1] - before[1]) + Math.abs(now[2] - before[2]) > 1e-4) st.dir = above ? unapplyAbove(now, above) : now;
           st.zoom = Math.max(0.05, Math.min(60, len / st.dist));
           clearTimeout(saveTimer.current);
           saveTimer.current = window.setTimeout(() => latest.current.onFollowChange?.({ dir: st.dir, zoom: st.zoom }), 250);
@@ -312,18 +403,19 @@ export const Stage = forwardRef<
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // size
+  // size: the canvas fills the stage, the camera is set up for the frame
+  const fr = props.frame;
   useEffect(() => {
     const s = space.current;
-    if (!s || props.width < 2) return;
+    if (!s || props.width < 2 || fr.w < 2) return;
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    s.setSize(props.width, props.height, dpr);
+    s.setSize(props.width, props.height, dpr, fr);
     const ov = ovRef.current!;
     ov.width = Math.round(props.width * (window.devicePixelRatio || 1));
     ov.height = Math.round(props.height * (window.devicePixelRatio || 1));
     request();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [props.width, props.height]);
+  }, [props.width, props.height, fr.x, fr.y, fr.w, fr.h]);
 
   // the editor gives the keypoint move back (play, a jump to a keypoint, a new keypoint)
   useEffect(() => {

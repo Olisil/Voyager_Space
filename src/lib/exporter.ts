@@ -1,9 +1,10 @@
 import { BufferTarget, CanvasSource, Mp4OutputFormat, Output, canEncodeVideo, type VideoCodec } from "mediabunny";
-import { cameraAt, type CameraCtx } from "./camera";
+import { displayPos } from "./bodies";
+import { cameraAt, sitePos, startAlpha, type CameraCtx } from "./camera";
 import { CREDIT, drawOverlay } from "./overlay";
 import { SpaceScene, texturesReady } from "./scene";
 import { dateAt, frameWeights, simAt } from "./timeline";
-import { outputSize } from "./types";
+import { outputSize, siteOf } from "./types";
 
 export interface ExportProgress {
   frame: number;
@@ -88,9 +89,18 @@ export async function exportVideo(ctx: CameraCtx, onProgress: (p: ExportProgress
       const cam = cameraAt(ctx, t);
       space.camera.position.set(...cam.pos);
       space.camera.lookAt(...cam.target);
+      // close to a body: wait for its sharp map before drawing the frame
+      space.updateDetail(true);
+      if (space.detailLoading) await space.detailReady();
       space.render();
       g.clearRect(0, 0, width, height);
       g.drawImage(glCanvas, 0, 0);
+      const alpha = startAlpha(ctx, t);
+      let start: { x: number; y: number; name: string; alpha: number } | null = null;
+      if (alpha > 0) {
+        const at = space.surfaceToScreen(displayPos(p.start.body, date, p.look.planetSize), sitePos(p, date, 1.002));
+        if (at) start = { x: at.x / scale, y: at.y / scale, name: siteOf(p).name, alpha };
+      }
       drawOverlay(g, {
         scene: { ...space, project: (pt) => { const s = space.project(pt); return s ? { x: s.x / scale, y: s.y / scale } : null; } } as SpaceScene,
         date,
@@ -101,7 +111,7 @@ export async function exportVideo(ctx: CameraCtx, onProgress: (p: ExportProgress
         labels: p.look.labels,
         dateStamp: p.look.dateStamp,
         credit: p.output.credit ? CREDIT : null,
-        spaceports: { show: false, selected: null },
+        start,
         focus: null,
         hud: p.mode === "vehicle" && p.look.hud && ctx.mission?.ok ? { mission: ctx.mission, tl: ctx.tl, t, date, showDate: p.look.dateStamp } : null,
       });

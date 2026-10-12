@@ -1,16 +1,16 @@
-import { displayPos, displayRadius, type BodyId, type V3 } from "./bodies";
+import { bodyBasis, displayPos, displayRadius, surfaceDir, type BodyId, type V3 } from "./bodies";
 import { flightPath } from "./display";
 import type { Mission } from "./mission";
 import { add, cross, dot, mul, norm, sub, unit } from "./orbits";
-import { dateAt, frameWeights, simAt, type Timeline } from "./timeline";
-import type { Keypoint, LookTarget, Project } from "./types";
+import { dateAt, frameWeights, simAt, videoAt, type Timeline } from "./timeline";
+import { siteOf, type Keypoint, type LookTarget, type Project } from "./types";
 
 export interface CameraCtx {
   project: Project;
   mission: Mission | null;
   tl: Timeline;
-  /** the user's current view: camera position minus target, and what it looks at */
-  view: { offset: V3; focus: LookTarget };
+  /** the user's current view: camera position minus target, what it looks at, and when (video s) */
+  view: { offset: V3; focus: LookTarget; t?: number };
 }
 
 export interface CameraPose {
@@ -26,9 +26,105 @@ export function vehicleAt(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, t:
   return fp ? fp.vehicle(simAt(ctx.tl, t), frameWeights(ctx.tl, t)) : null;
 }
 
+/** A point on a body's surface (lift: radii from the centre), as drawn at a date. */
+export function surfacePos(b: BodyId, lat: number, lon: number, date: Date, boost: number, lift = 1): V3 {
+  const c = displayPos(b, date, boost);
+  return add(c, mul(surfaceDir(bodyBasis(b, date), lat, lon), displayRadius(b, boost) * lift));
+}
+
+/** Where the launch site is drawn at a date: on the starting body's surface, turning with it. */
+export function sitePos(p: Project, date: Date, lift = 1): V3 {
+  const s = siteOf(p);
+  return surfacePos(p.start.body, s.lat, s.lon, date, p.look.planetSize, lift);
+}
+
+/** An offset that turns with the starting body (for views of the launch site) from one moment to another. */
+export function turnWithBody(p: Project, off: V3, from: Date, to: Date): V3 {
+  const b0 = bodyBasis(p.start.body, from);
+  const b1 = bodyBasis(p.start.body, to);
+  const c: V3 = [dot(off, b0.x), dot(off, b0.y), dot(off, b0.z)];
+  return add(add(mul(b1.x, c[0]), mul(b1.y, c[1])), mul(b1.z, c[2]));
+}
+
+/**
+ * How much of the start-of-journey symbol shows at video time t: all of it until the ascent
+ * has drawn the path out of the launch site into orbit, then it fades in a second.
+ */
+export function startAlpha(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, t: number): number {
+  if (ctx.project.mode !== "vehicle") return 0;
+  const m = ctx.mission;
+  if (!m?.ok || !m.phases.length) return 1;
+  const x = t - videoAt(ctx.tl, m.phases[0].t1);
+  return x <= 0 ? 1 : x >= 1 ? 0 : 1 - x * x * (3 - 2 * x);
+}
+
 export function targetPos(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, target: Keypoint["target"], t: number): V3 {
   if (target === "vehicle") return vehicleAt(ctx, t) ?? displayPos("earth", dateAt(ctx.tl, t), boostOf(ctx.project));
+  if (target === "site") return sitePos(ctx.project, dateAt(ctx.tl, t));
   return displayPos(target, dateAt(ctx.tl, t), boostOf(ctx.project));
+}
+
+/**
+ * "Keep the camera above the craft": near a body the follow camera's direction is pulled
+ * towards the local vertical (from the body's centre through the craft) and a little behind
+ * the craft, so the craft is always seen against the body, never hidden by it, and the camera
+ * never dips into it. `w` fades the pull in close to the body and out a few radii away.
+ */
+export interface Above {
+  up: V3;
+  back: V3;
+  w: number;
+}
+const ABOVE_UP = 1.4;
+const ABOVE_BACK = 0.35;
+export function aboveFrame(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, t: number): Above | null {
+  const m = ctx.mission;
+  const v = vehicleAt(ctx, t);
+  if (!ctx.project.camera.above || !m?.ok || !m.traj || !v) return null;
+  const boost = boostOf(ctx.project);
+  const date = dateAt(ctx.tl, t);
+  let best: BodyId | null = null;
+  let gap = Infinity;
+  let c: V3 = [0, 0, 0];
+  for (const b of m.bodies) {
+    const cb = displayPos(b, date, boost);
+    const r = displayRadius(b, boost);
+    const g = (norm(sub(v, cb)) - r) / r;
+    if (g < gap) {
+      gap = g;
+      best = b;
+      c = cb;
+    }
+  }
+  if (!best) return null;
+  const x = (gap - 1.5) / 3;
+  const w = x <= 0 ? 1 : x >= 1 ? 0 : 1 - x * x * (3 - 2 * x);
+  if (w <= 0) return null;
+  const up = unit(sub(v, c));
+  // which way the craft moves over the ground: from its true state relative to the body
+  const sim = simAt(ctx.tl, t);
+  const s = m.traj.at(sim);
+  const bs = m.traj.ephem.at(best, sim);
+  const rr = sub(s.r, bs.r);
+  const vv = sub(s.v, bs.v);
+  let n = cross(rr, vv);
+  if (norm(n) < 1e-9) n = cross(up, Math.abs(up[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]);
+  const fwd = unit(cross(unit(n), up));
+  return { up, back: mul(fwd, -1), w };
+}
+export function applyAbove(dir: V3, a: Above): V3 {
+  const d = add(add(dir, mul(a.up, ABOVE_UP * a.w)), mul(a.back, ABOVE_BACK * a.w));
+  return norm(d) > 1e-9 ? unit(d) : a.up;
+}
+/** The direction that applyAbove turns into `dir` (for keeping a dragged view as it is). */
+export function unapplyAbove(dir: V3, a: Above): V3 {
+  const k = add(mul(a.up, ABOVE_UP * a.w), mul(a.back, ABOVE_BACK * a.w));
+  const fk = dot(dir, k);
+  const disc = fk * fk - dot(k, k) + 1;
+  // outside the reachable cap: the closest reachable direction
+  const sc = disc >= 0 ? fk + Math.sqrt(disc) : Math.max(0, fk);
+  const d = sub(mul(dir, sc), k);
+  return norm(d) > 1e-9 ? unit(d) : dir;
 }
 
 /** Centripetal Catmull–Rom, so the camera glides through the keypoints without overshooting. */
@@ -154,7 +250,9 @@ export function followPose(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, t
   const f = followFrame(ctx, t);
   if (!f) return null;
   const c = ctx.project.camera.follow;
-  const dir = c.dir ? unit(c.dir) : followDir(ctx, t);
+  let dir = c.dir ? unit(c.dir) : followDir(ctx, t);
+  const a = aboveFrame(ctx, t);
+  if (a) dir = applyAbove(dir, a);
   return { target: f.target, pos: add(f.target, mul(dir, f.dist * (c.zoom || 1))) };
 }
 
@@ -162,7 +260,10 @@ export function cameraAt(ctx: CameraCtx, t: number): CameraPose {
   const p = ctx.project;
   const kps = [...p.camera.keypoints].sort((a, b) => a.t - b.t);
   if (p.camera.mode === "keypoints" && kps.length) {
-    const pos = kps.map((k) => add(targetPos(ctx, k.target, t), k.offset));
+    const now = dateAt(ctx.tl, t);
+    // views of the launch site turn with the ground
+    const off = (k: Keypoint): V3 => (k.target === "site" ? turnWithBody(p, k.offset, dateAt(ctx.tl, k.t), now) : k.offset);
+    const pos = kps.map((k) => add(targetPos(ctx, k.target, t), off(k)));
     const tgt = kps.map((k) => targetPos(ctx, k.target, t));
     if (t <= kps[0].t || kps.length === 1) return { pos: pos[0], target: tgt[0] };
     if (t >= kps[kps.length - 1].t) return { pos: pos[pos.length - 1], target: tgt[tgt.length - 1] };
@@ -178,7 +279,9 @@ export function cameraAt(ctx: CameraCtx, t: number): CameraPose {
     if (f) return f;
   }
   const target = targetPos(ctx, ctx.view.focus, t);
-  return { pos: add(target, ctx.view.offset), target };
+  const v = ctx.view;
+  const off = v.focus === "site" && v.t !== undefined ? turnWithBody(p, v.offset, dateAt(ctx.tl, v.t), dateAt(ctx.tl, t)) : v.offset;
+  return { pos: add(target, off), target };
 }
 
 /**

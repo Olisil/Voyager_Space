@@ -6,7 +6,7 @@ import { exportVideo, ExportUnsupportedError, type ExportProgress } from "../lib
 import { tenth } from "../lib/format";
 import { buildMission, isLocal, searchTransfers, type Mission, type Transfer } from "../lib/mission";
 import { dateAt, makeTimeline } from "../lib/timeline";
-import { ASPECTS, isPristine, newProject, uid, type Aspect, type Keypoint, type LookTarget, type Project } from "../lib/types";
+import { ASPECTS, isPristine, newProject, outputSize, uid, type Aspect, type Keypoint, type LookTarget, type Project } from "../lib/types";
 import { navigate } from "../router";
 import { ThemeToggle } from "../theme";
 import { CameraPanel } from "./panels/CameraPanel";
@@ -76,7 +76,11 @@ function EditorLoaded({ initial }: { initial: Project }) {
     () => (helioDest ? searchTransfers(from, dest as BodyId, new Date(project.schedule.date), project.schedule.windowDays) : null),
     [helioDest, from, dest, project.schedule.date, project.schedule.windowDays],
   );
-  const mission = useMemo<Mission | null>(() => (vehicle ? buildMission(project, transfers) : null), [project.mode, project.start, project.schedule, project.vehicle, project.timing, transfers]);
+  const mission = useMemo<Mission | null>(
+    () => (vehicle ? buildMission(project, transfers) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [project.mode, project.start.body, project.start.site, project.schedule, project.vehicle, project.timing, transfers],
+  );
   const flightOk = vehicle && !!mission?.ok;
   // vehicle mode without a flight yet: why, for the Camera and Preview steps
   const noFlight = !vehicle || flightOk ? null : !dest ? "Choose a destination in step 3, Schedule & destination." : (mission?.message ?? "This flight couldn't be worked out.");
@@ -149,14 +153,22 @@ function EditorLoaded({ initial }: { initial: Project }) {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // The 3D view fills the stage; the video frame is a window in it, in a passe-partout that
+  // dims the rest (as in Voyager Earth), with the frame's shape and size above its corner.
   const ratio = ASPECTS[project.output.aspect].ratio;
-  const pad = 24;
-  const fw = Math.max(50, Math.min(area.w - pad * 2, (area.h - pad * 2) * ratio));
-  const fh = fw / ratio;
+  const small = area.w < 820;
+  const padX = small ? 12 : 48;
+  const padY = small ? 34 : 52;
+  const fw = Math.max(50, Math.floor(Math.min(area.w - padX * 2, (area.h - padY * 2) * ratio)));
+  const fh = Math.floor(fw / ratio);
+  const fx = Math.round((area.w - fw) / 2);
+  const fy = Math.round((area.h - fh) / 2);
+  const out = outputSize(project.output.aspect, project.output.resolution);
 
   // ---- what the view does
   const cam = project.camera;
-  const focus: LookTarget = vehicle && (step === "start" || step === "vehicle") ? from : cam.focus;
+  const firstSteps = step === "start" || step === "vehicle";
+  const focus: LookTarget = vehicle && firstSteps ? (project.start.view === "site" ? "site" : from) : cam.focus;
   const camStep = step === "camera" || step === "export";
   const usesKeypoints = !vehicle || cam.mode === "keypoints";
   // Camera and Preview steps: the follow camera, or the keypoint move (also when paused, so
@@ -167,6 +179,16 @@ function EditorLoaded({ initial }: { initial: Project }) {
 
   // a new camera mode, or no keypoints left: nothing to give back
   useEffect(() => setOverride(false), [cam.mode, cam.keypoints.length === 0]);
+  // centred on the launch site: another site brings the view along
+  const firstSite = useRef(true);
+  useEffect(() => {
+    if (firstSite.current) {
+      firstSite.current = false;
+      return;
+    }
+    if (focus === "site") stage.current?.frameBody("site");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.start.site, project.start.body]);
 
   const setFocus = (target: LookTarget) => setProject((p) => (p.camera.focus === target ? p : { ...p, camera: { ...p.camera, focus: target }, updatedAt: Date.now() }));
 
@@ -376,8 +398,7 @@ function EditorLoaded({ initial }: { initial: Project }) {
 
       <main className="stage">
         <div className="stage-area" ref={areaRef}>
-          <div className="frame" style={{ width: fw, height: fh }}>
-            <Stage
+          <Stage
               ref={stage}
               project={project}
               mission={mission}
@@ -393,10 +414,16 @@ function EditorLoaded({ initial }: { initial: Project }) {
               onFollowChange={(f) => update((p) => ({ ...p, camera: { ...p.camera, follow: f } }))}
               focus={focus}
               showSpaceports={showPorts}
+              startSymbol={!vehicle ? "never" : firstSteps ? "always" : "video"}
               onPickSpaceport={(id) => update((p) => ({ ...p, start: { ...p.start, site: id } }))}
-              width={fw}
-              height={fh}
+              width={area.w}
+              height={area.h}
+              frame={{ x: fx, y: fy, w: fw, h: fh }}
             />
+          <div className={`frame${progress ? " is-rendering" : ""}`} style={{ left: fx, top: fy, width: fw, height: fh }}>
+            <div className="frame-size" aria-label={`Video size ${project.output.aspect}, ${out.width} by ${out.height} pixels`}>
+              {project.output.aspect} · {out.width}×{out.height}
+            </div>
             {showPorts && <div className="stage-hint">Drag to turn the globe. Click a spaceport to launch from it.</div>}
             {warn && <div className="stage-hint stage-warn">{warn}</div>}
             {override && camMode === "keypoints" && (

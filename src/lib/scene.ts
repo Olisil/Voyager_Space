@@ -57,6 +57,62 @@ function tex(file: string, srgb = true): THREE.Texture {
 /** Resolves when every texture requested so far has loaded (or failed). */
 export const texturesReady = () => Promise.all([...pending]);
 
+// Sharper maps for close-ups, loaded when the camera comes near a body and let go when it leaves.
+const HI_URLS = import.meta.glob("../assets/textures/hi/*", { eager: true, query: "?url", import: "default" }) as Record<string, string>;
+const HI = (f: string) => HI_URLS[`../assets/textures/hi/${f}`];
+/** the sharp map (and its width), the width of the everyday map it stands in for, and Earth's clouds */
+const DETAIL: Partial<Record<BodyId, { file: string; size: number; low: number; clouds?: string }>> = {
+  earth: { file: "earth_day.webp", size: 8192, low: 4096, clouds: "earth_clouds.webp" },
+  moon: { file: "moon.jpg", size: 8192, low: 2048 },
+  mars: { file: "mars.webp", size: 8192, low: 2048 },
+  mercury: { file: "mercury.jpg", size: 6144, low: 2048 },
+  jupiter: { file: "jupiter.webp", size: 4096, low: 2048 },
+  saturn: { file: "saturn.webp", size: 4096, low: 2048 },
+  sun: { file: "sun.webp", size: 4096, low: 2048 },
+};
+type Pixels = HTMLImageElement | ImageBitmap;
+const blobs = new Map<string, Promise<Blob | null>>();
+/**
+ * Decoded off the main thread where the browser can (no hitch when an 8K map arrives); the
+ * downloaded file is kept, the decoded pixels only as long as a view uses them.
+ */
+async function loadPixels(url: string): Promise<Pixels | null> {
+  if (typeof createImageBitmap !== "undefined") {
+    try {
+      let b = blobs.get(url);
+      if (!b) {
+        b = fetch(url)
+          .then((r) => (r.ok ? r.blob() : null))
+          .catch(() => null);
+        blobs.set(url, b);
+      }
+      const blob = await b;
+      if (blob) return await createImageBitmap(blob);
+    } catch {
+      /* fall back to an image element */
+    }
+  }
+  return new Promise<Pixels | null>((resolve) => new THREE.ImageLoader().load(url, resolve, undefined, () => resolve(null)));
+}
+const isBitmap = (px: unknown) => typeof ImageBitmap !== "undefined" && px instanceof ImageBitmap;
+/** Bitmaps can't be flipped on upload: the shaders flip them instead (uniform flipV). */
+function detailTexture(px: Pixels, red = false): THREE.Texture {
+  const t = new THREE.Texture(px as HTMLImageElement);
+  t.flipY = !isBitmap(px);
+  if (red) {
+    t.format = THREE.RedFormat;
+    t.colorSpace = THREE.NoColorSpace;
+  } else t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+function freeTexture(t: THREE.Texture | undefined) {
+  if (!t) return;
+  const img = t.image as unknown;
+  t.dispose();
+  if (isBitmap(img)) (img as ImageBitmap).close();
+}
+
 const vert = /* glsl */ `
   varying vec3 vN; varying vec3 vW; varying vec2 vUv;
   #include <common>
@@ -72,7 +128,7 @@ const vert = /* glsl */ `
 
 const planetFrag = /* glsl */ `
   uniform sampler2D map; uniform sampler2D night; uniform float hasNight; uniform float ambient;
-  uniform vec3 sunPos;
+  uniform vec3 sunPos; uniform float flipV;
   varying vec3 vN; varying vec3 vW; varying vec2 vUv;
   #include <logdepthbuf_pars_fragment>
   void main(){
@@ -83,7 +139,7 @@ const planetFrag = /* glsl */ `
     float d = dot(n, l);
     float lit = clamp((d + 0.04) / 1.04, 0.0, 1.0);
     lit = lit * smoothstep(-0.04, 0.12, d);
-    vec3 day = texture2D(map, vUv).rgb;
+    vec3 day = texture2D(map, vec2(vUv.x, mix(vUv.y, 1.0 - vUv.y, flipV))).rgb;
     vec3 col = day * (ambient + lit * 1.08);
     if (hasNight > 0.5) {
       float dark = 1.0 - smoothstep(-0.18, 0.06, d);
@@ -100,7 +156,7 @@ const planetFrag = /* glsl */ `
   }`;
 
 const cloudFrag = /* glsl */ `
-  uniform sampler2D map; uniform vec3 sunPos;
+  uniform sampler2D map; uniform vec3 sunPos; uniform float flipV;
   varying vec3 vN; varying vec3 vW; varying vec2 vUv;
   #include <logdepthbuf_pars_fragment>
   void main(){
@@ -108,7 +164,7 @@ const cloudFrag = /* glsl */ `
     vec3 n = normalize(vN);
     float d = dot(n, normalize(sunPos - vW));
     float lit = clamp((d + 0.05) / 1.05, 0.0, 1.0) * smoothstep(-0.05, 0.15, d);
-    float a = texture2D(map, vUv).r;
+    float a = texture2D(map, vec2(vUv.x, mix(vUv.y, 1.0 - vUv.y, flipV))).r;
     gl_FragColor = vec4(vec3(1.0) * (0.015 + lit), a * 0.92);
     #include <colorspace_fragment>
   }`;
@@ -175,6 +231,18 @@ interface BodyNode {
   spin: THREE.Group; // oriented (body-fixed)
   mats: THREE.ShaderMaterial[];
   ring?: THREE.ShaderMaterial;
+  /** the material showing the surface map (a ShaderMaterial with a `map` uniform, or the Sun's basic material) */
+  surface: THREE.ShaderMaterial | THREE.MeshBasicMaterial;
+  clouds?: THREE.ShaderMaterial;
+}
+
+interface Detail {
+  ready: boolean;
+  promise: Promise<void>;
+  tex?: THREE.Texture;
+  clouds?: THREE.Texture;
+  /** since when the sharp map hasn't been needed (ms) */
+  idle?: number;
 }
 
 interface PathLine {
@@ -210,11 +278,15 @@ export class SpaceScene {
   private path: PathLine | null = null;
   private vehicle: THREE.Sprite;
   private vehicleAt = new THREE.Vector3();
-  private ports: THREE.Points | null = null;
-  private portSel: THREE.Mesh | null = null;
   private stars: THREE.Mesh;
   private size = { w: 1, h: 1 };
+  /** the video frame inside the canvas (the camera's own view); the rest is passe-partout */
+  private frame = { x: 0, y: 0, w: 1, h: 1 };
   private lineMats: LineMaterial[] = [];
+  private detail = new Map<BodyId, Detail>();
+  private disposed = false;
+  /** called when a sharp map has arrived, so the view can be drawn again */
+  onDetail: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, opts: { preserve?: boolean } = {}) {
     this.renderer = new THREE.WebGLRenderer({
@@ -266,7 +338,7 @@ export class SpaceScene {
       glow.scale.setScalar(7);
       glow.name = "glow";
       group.add(glow);
-      return { id, group, spin, mats };
+      return { id, group, spin, mats, surface: m };
     }
     const tint = (() => {
       // the Galilean moons reuse the lunar map, tinted
@@ -275,19 +347,23 @@ export class SpaceScene {
     })();
     const mat = new THREE.ShaderMaterial({
       vertexShader: vert,
-      fragmentShader: tint ? planetFrag.replace("vec3 day = texture2D(map, vUv).rgb;", `vec3 day = texture2D(map, vUv).rgb * vec3(${tint.map((x) => x.toFixed(2)).join(",")});`) : planetFrag,
+      fragmentShader: tint ? planetFrag.replace("vec3 col = day * (ambient", `day *= vec3(${tint.map((x) => x.toFixed(2)).join(",")});\n    vec3 col = day * (ambient`) : planetFrag,
       uniforms: {
         map: { value: tex(info.texture) },
         night: { value: id === "earth" ? tex("earth_night.jpg") : null },
         hasNight: { value: id === "earth" ? 1 : 0 },
-        ambient: { value: 0.012 },
+        // a faint night side where there are no city lights to see the ground by, so a launch
+        // site or a landing in the dark still shows its terrain
+        ambient: { value: id === "earth" ? 0.012 : 0.045 },
         sunPos: { value: new THREE.Vector3() },
+        flipV: { value: 0 },
       },
     });
     mats.push(mat);
     spin.add(new THREE.Mesh(geo, mat));
+    let cm: THREE.ShaderMaterial | undefined;
     if (id === "earth") {
-      const cm = new THREE.ShaderMaterial({ vertexShader: vert, fragmentShader: cloudFrag, uniforms: { map: { value: tex("earth_clouds.jpg", false) }, sunPos: { value: new THREE.Vector3() } }, transparent: true, depthWrite: false });
+      cm = new THREE.ShaderMaterial({ vertexShader: vert, fragmentShader: cloudFrag, uniforms: { map: { value: tex("earth_clouds.jpg", false) }, sunPos: { value: new THREE.Vector3() }, flipV: { value: 0 } }, transparent: true, depthWrite: false });
       mats.push(cm);
       const clouds = new THREE.Mesh(geo, cm);
       clouds.scale.setScalar(1.006);
@@ -333,14 +409,22 @@ export class SpaceScene {
       rm.rotation.x = -Math.PI / 2;
       spin.add(rm);
     }
-    return { id, group, spin, mats, ring };
+    return { id, group, spin, mats, ring, surface: mat, clouds: cm };
   }
 
-  setSize(w: number, h: number, pixelRatio = 1) {
+  /**
+   * Canvas size (CSS px). `frame` is the video frame inside it: the camera is set up for the
+   * frame, and the canvas shows more of the same view around it (the passe-partout).
+   */
+  setSize(w: number, h: number, pixelRatio = 1, frame?: { x: number; y: number; w: number; h: number }) {
     this.size = { w, h };
+    this.frame = frame ?? { x: 0, y: 0, w, h };
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
+    const f = this.frame;
+    this.camera.aspect = f.w / f.h;
+    if (f.x !== 0 || f.y !== 0 || f.w !== w || f.h !== h) this.camera.setViewOffset(f.w, f.h, -f.x, -f.y, w, h);
+    else this.camera.clearViewOffset();
     this.camera.updateProjectionMatrix();
     for (const m of this.lineMats) m.resolution.set(w * pixelRatio, h * pixelRatio);
   }
@@ -424,7 +508,8 @@ export class SpaceScene {
           this.lineMats.push(mat);
           return mat;
         };
-        const segFull = new Float32Array((fp.n - 1) * 6);
+        // one segment more than the path has: the path is split at the craft (see below)
+        const segFull = new Float32Array(fp.n * 6);
         const segDone = new Float32Array(fp.n * 6);
         const gFull = new LineGeometry();
         LineSegmentsGeometry.prototype.setPositions.call(gFull, segFull);
@@ -455,16 +540,28 @@ export class SpaceScene {
     const now = s.sim;
     const { pts, segFull, segDone } = P;
     const path = P.fp;
-    path.positions(now, pts, s.frames);
     const o = path.origin(now);
-    P.holder.position.set(o[0], o[1], o[2]);
+    const v = path.vehicle(now, s.frames);
+    // vertices relative to the craft (the camera is usually near it), so single precision is enough up close
+    const base: V3 = [v[0] - o[0], v[1] - o[1], v[2] - o[2]];
+    path.positions(now, pts, s.frames, base);
+    P.holder.position.set(o[0] + base[0], o[1] + base[1], o[2] + base[2]);
     const n = path.n;
     for (let i = 0; i < n - 1; i++) {
       segFull.set(pts.subarray(i * 3, i * 3 + 6), i * 6);
     }
     const k = path.doneCount(now);
-    const v = path.vehicle(now, s.frames);
-    const rel: V3 = [v[0] - o[0], v[1] - o[1], v[2] - o[2]];
+    const rel: V3 = [0, 0, 0];
+    // the whole path runs through the craft too (between two vertices it is on the true curve,
+    // a little off their chord): the segment it is on becomes two, the spare slot at the end
+    if (k >= 1 && k <= n - 1) {
+      segFull.set(rel, (k - 1) * 6 + 3);
+      segFull.set(rel, (n - 1) * 6);
+      segFull.set(pts.subarray(k * 3, k * 3 + 3), (n - 1) * 6 + 3);
+    } else {
+      segFull.set(pts.subarray(0, 3), (n - 1) * 6);
+      segFull.set(pts.subarray(0, 3), (n - 1) * 6 + 3);
+    }
     for (let i = 0; i < k - 1; i++) segDone.set(pts.subarray(i * 3, i * 3 + 6), i * 6);
     if (k >= 1) {
       segDone.set(pts.subarray((k - 1) * 3, k * 3), (k - 1) * 6);
@@ -481,36 +578,115 @@ export class SpaceScene {
     this.vehicle.visible = true;
     this.vehicleAt.set(v[0], v[1], v[2]);
     this.vehicle.position.copy(this.vehicleAt);
-    this.vehicle.scale.setScalar(0.028);
+    // sized against the frame, so it looks the same in the editor and in the video
+    this.vehicle.scale.setScalar((0.028 * this.size.h) / this.frame.h);
   }
 
-  private updatePorts(s: SceneState) {
-    const earth = this.nodes.get("earth")!;
-    if (!this.ports) {
-      const pos: number[] = [];
-      for (const p of SPACEPORTS) {
-        const la = (p.lat * Math.PI) / 180;
-        const lo = (p.lon * Math.PI) / 180;
-        // geometry frame: X = lon 0, Y = pole, −Z = lon 90°E
-        pos.push(1.004 * Math.cos(la) * Math.cos(lo), 1.004 * Math.sin(la), -1.004 * Math.cos(la) * Math.sin(lo));
+  private updatePorts(_s: SceneState) {
+    // spaceports are drawn over the view (drawOverlay), crisp and never under the clouds
+  }
+
+  /** Screen position of a point on a body's surface, or null when it is round the back (or off the canvas edge). */
+  surfaceToScreen(center: V3, point: V3): { x: number; y: number } | null {
+    const cam = this.camera.position;
+    const nx = point[0] - center[0];
+    const ny = point[1] - center[1];
+    const nz = point[2] - center[2];
+    if ((cam.x - point[0]) * nx + (cam.y - point[1]) * ny + (cam.z - point[2]) * nz <= 0) return null;
+    return this.project(point);
+  }
+
+  // ---- sharp maps for close-ups
+
+  /**
+   * Swaps in the sharp map of a body while the camera is close enough for the everyday map
+   * to look soft (it would be magnified on screen), and lets it go a while after.
+   * `keep`: never let go (a render loads what it needs and keeps it to the end).
+   */
+  updateDetail(keep = false) {
+    if (this.disposed) return;
+    const max = this.renderer.capabilities.maxTextureSize;
+    const cam = this.camera;
+    const fpx = this.frame.h / 2 / Math.tan((cam.fov * Math.PI) / 360);
+    cam.updateMatrixWorld();
+    const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse));
+    const now = performance.now();
+    for (const id of Object.keys(DETAIL) as BodyId[]) {
+      const d = DETAIL[id]!;
+      if (d.size > max) continue;
+      const node = this.nodes.get(id)!;
+      const c = node.group.position;
+      const r = node.spin.scale.x;
+      const dist = cam.position.distanceTo(c);
+      const near = Math.max(dist - r, r * 0.002);
+      const seen = frustum.intersectsSphere(new THREE.Sphere(c, r));
+      // screen pixels per radian of the surface at its nearest point, against texels per radian of the map
+      const need = seen ? ((r / near) * fpx * 2 * Math.PI) / d.low : 0;
+      const st = this.detail.get(id);
+      if (need > 0.9) {
+        if (!st) this.loadDetail(id);
+        else st.idle = undefined;
+      } else if (st && !keep && need < 0.45) {
+        st.idle ??= now;
+        if (now - st.idle > 4000) this.dropDetail(id);
       }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-      const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 6, sizeAttenuation: false, depthTest: true });
-      mat.toneMapped = false;
-      this.ports = new THREE.Points(g, mat);
-      earth.spin.add(this.ports);
-      this.portSel = new THREE.Mesh(new THREE.SphereGeometry(0.012, 16, 8), new THREE.MeshBasicMaterial({ color: 0xbad70a, toneMapped: false }));
-      earth.spin.add(this.portSel);
     }
-    this.ports.visible = s.showSpaceports;
-    const sel = SPACEPORTS.find((p) => p.id === s.selectedSpaceport);
-    this.portSel!.visible = s.showSpaceports && !!sel;
-    if (sel) {
-      const la = (sel.lat * Math.PI) / 180;
-      const lo = (sel.lon * Math.PI) / 180;
-      this.portSel!.position.set(1.004 * Math.cos(la) * Math.cos(lo), 1.004 * Math.sin(la), -1.004 * Math.cos(la) * Math.sin(lo));
+  }
+  /** Resolves when the sharp maps asked for so far are in. */
+  detailReady(): Promise<unknown> {
+    return Promise.all([...this.detail.values()].map((d) => d.promise));
+  }
+  get detailLoading() {
+    return [...this.detail.values()].some((d) => !d.ready);
+  }
+  private loadDetail(id: BodyId) {
+    const d = DETAIL[id]!;
+    const node = this.nodes.get(id)!;
+    const st: Detail = { ready: false, promise: Promise.resolve() };
+    st.promise = Promise.all([loadPixels(HI(d.file)), d.clouds ? loadPixels(HI(d.clouds)) : Promise.resolve(null)]).then(([px, cpx]) => {
+      if (this.disposed || this.detail.get(id) !== st || !px) return;
+      const aniso = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
+      st.tex = detailTexture(px);
+      st.tex.anisotropy = aniso;
+      const m = node.surface;
+      if (m instanceof THREE.ShaderMaterial) {
+        m.uniforms.map.value = st.tex;
+        m.uniforms.flipV.value = st.tex.flipY ? 0 : 1;
+      } else {
+        if (!st.tex.flipY) {
+          st.tex.repeat.set(1, -1);
+          st.tex.offset.set(0, 1);
+        }
+        m.map = st.tex;
+      }
+      if (cpx && node.clouds) {
+        st.clouds = detailTexture(cpx, true);
+        st.clouds.anisotropy = aniso;
+        node.clouds.uniforms.map.value = st.clouds;
+        node.clouds.uniforms.flipV.value = st.clouds.flipY ? 0 : 1;
+      }
+      st.ready = true;
+      this.onDetail?.();
+    });
+    this.detail.set(id, st);
+  }
+  private dropDetail(id: BodyId) {
+    const st = this.detail.get(id);
+    if (!st) return;
+    this.detail.delete(id);
+    const node = this.nodes.get(id)!;
+    const low = tex(BODIES[id].texture);
+    const m = node.surface;
+    if (m instanceof THREE.ShaderMaterial) {
+      m.uniforms.map.value = low;
+      m.uniforms.flipV.value = 0;
+    } else m.map = low;
+    if (node.clouds) {
+      node.clouds.uniforms.map.value = tex("earth_clouds.jpg", false);
+      node.clouds.uniforms.flipV.value = 0;
     }
+    freeTexture(st.tex);
+    freeTexture(st.clouds);
   }
 
   /** Nearest spaceport to a click on the Earth, or null. */
@@ -554,6 +730,12 @@ export class SpaceScene {
   }
 
   dispose() {
+    this.disposed = true;
+    for (const st of this.detail.values()) {
+      freeTexture(st.tex);
+      freeTexture(st.clouds);
+    }
+    this.detail.clear();
     this.renderer.dispose();
   }
 }

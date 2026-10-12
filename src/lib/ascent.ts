@@ -16,8 +16,8 @@ export interface MEvent {
   label: string;
 }
 
-/** Spin rates (rad/s) of bodies a rocket can launch from or land on. */
-const SPIN: Partial<Record<BodyId, number>> = { earth: 7.2921159e-5, moon: 2.6617e-6, mars: 7.0882e-5, mercury: 1.2400e-6, venus: -2.9924e-7 };
+/** Spin rates (rad/s) of bodies a rocket can launch from or land on (Venus turns backwards). */
+export const SPIN: Partial<Record<BodyId, number>> = { earth: 7.2921159e-5, moon: 2.6617e-6, mars: 7.0882e-5, mercury: 1.2400e-6, venus: -2.9924e-7 };
 /** Sea-level density (kg/m³) and scale height (km), for max-Q. */
 const AIR: Partial<Record<BodyId, [number, number]>> = { earth: [1.225, 8.5], mars: [0.02, 11.1], venus: [65, 15.9] };
 
@@ -206,6 +206,16 @@ export function simulateAscent(o: { body: BodyId; site: V3; dir: V3; rIns: numbe
   }
   prop.i = Math.min(i, Math.max(0, st.length - 1));
   if (!st.length) T = 480;
+  // A lander lifting off a small world doesn't burn flat out like a heavy rocket off Earth:
+  // it pushes at a few times the local gravity, so the climb into orbit takes minutes and
+  // runs a long way downrange, as Apollo's ascent stage did. Stretch the burn to that pace.
+  const PUSH: Partial<Record<BodyId, number>> = { moon: 4, mercury: 4, mars: 10 };
+  const push = PUSH[o.body];
+  const kT = push ? Math.max(1, (need * 1000) / push / Math.max(1, T)) : 1;
+  if (kT > 1) {
+    T *= kT;
+    for (const e of events) e.t *= kT;
+  }
   if (o.vehicle.refuel && prop.stages.length) {
     const last = prop.stages[prop.stages.length - 1];
     const orig = o.vehicle.stages[o.vehicle.stages.length - 1];
@@ -221,8 +231,8 @@ export function simulateAscent(o: { body: BodyId; site: V3; dir: V3; rIns: numbe
     }
     return v;
   };
-  const dvEnd = burns.length ? ideal(T) : 1;
-  const frac = (tt: number) => (burns.length && dvEnd > 0 ? Math.min(1, ideal(tt) / dvEnd) : Math.min(1, tt / T));
+  const dvEnd = burns.length ? ideal(T / kT) : 1;
+  const frac = (tt: number) => (burns.length && dvEnd > 0 ? Math.min(1, ideal(tt / kT) / dvEnd) : Math.min(1, tt / T));
 
   // ---- gravity turn: speed grows with the work done; the climb is steep at first, then
   // pitches over to level flight (smoothstep in the fraction done, ending at `fe`)
@@ -267,8 +277,33 @@ export function simulateAscent(o: { body: BodyId; site: V3; dir: V3; rIns: numbe
     if (run(m, false).h < hIns) lo = m;
     else hi = m;
   }
-  const prof = run(0.5 * (lo + hi), true);
-  const scaleH = prof.h > 0 ? hIns / prof.h : 1;
+  let prof = run(0.5 * (lo + hi), true);
+  let scaleH = prof.h > 0 ? hIns / prof.h : 1;
+  if (o.body !== "earth") {
+    // Off small airless worlds (and thin-aired Mars) the climb is shallow from the start: a
+    // short rise, then a long arc that levels off into orbit. Lay the path out as that arc,
+    // h = hIns·(1 − (1 − x)²) over the ground covered x, travelled at the rocket's pace.
+    const step = T / n;
+    const Lc = new Float64Array(n + 1);
+    for (let j = 1; j <= n; j++) Lc[j] = Lc[j - 1] + vIns * Math.pow(0.5 * (F[j - 1] + F[j]), 1.5) * step;
+    const L = Math.max(1e-6, Lc[n]);
+    const DR = 0.82 * L;
+    const H2 = new Float64Array(n + 1);
+    const TH2 = new Float64Array(n + 1);
+    const V2 = new Float64Array(n + 1);
+    const GA2 = new Float64Array(n + 1);
+    let rot = 0;
+    for (let j = 0; j <= n; j++) {
+      const x = Lc[j] / L;
+      H2[j] = hIns * (1 - (1 - x) ** 2);
+      if (j > 0) rot += (vRot / (R + 0.5 * (H2[j] + H2[j - 1]))) * step;
+      TH2[j] = (DR * x) / R + rot;
+      V2[j] = vIns * Math.pow(F[j], 1.5);
+      GA2[j] = Math.atan2(2 * hIns * (1 - x), DR);
+    }
+    prof = { h: hIns, H: H2, TH: TH2, V: V2, GA: GA2 };
+    scaleH = 1;
+  }
   const H = prof.H!.map((x) => x * scaleH);
   const TH = prof.TH!;
   const V = prof.V!;

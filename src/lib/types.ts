@@ -7,8 +7,8 @@ export type Resolution = 1080 | 1440 | 2160;
 export type Fps = 24 | 25 | 30 | 60;
 export type EarthOrbit = "leo" | "sso" | "gto" | "geo";
 export type Destination = EarthOrbit | BodyId;
-/** what the camera looks at: a body, or the craft */
-export type LookTarget = BodyId | "vehicle";
+/** what the camera looks at: a body, the craft, or the launch site on the starting body */
+export type LookTarget = BodyId | "vehicle" | "site";
 export type Scenario = "asap" | "fastest" | "cheapest" | "balanced";
 
 export interface Site {
@@ -78,7 +78,12 @@ export interface Project {
   createdAt: number;
   updatedAt: number;
   mode: Mode;
-  start: { body: BodyId; site: string };
+  start: {
+    body: BodyId;
+    site: string;
+    /** what the view centres on in the first steps: the starting body, or the launch site */
+    view: "planet" | "site";
+  };
   vehicle: Vehicle;
   schedule: {
     /** ISO date-time (UTC) of the start of the window / of the observation */
@@ -109,6 +114,8 @@ export interface Project {
     keypoints: Keypoint[];
     /** follow camera: viewing direction (from the craft towards the camera) and zoom factor */
     follow: { dir: [number, number, number] | null; zoom: number };
+    /** follow camera near a planet: stay on the far side of the craft from the planet's centre */
+    above: boolean;
   };
   timing: { duration: number };
   output: { aspect: Aspect; resolution: Resolution; fps: Fps; holdStart: number; holdEnd: number; credit: boolean };
@@ -138,11 +145,11 @@ export function newProject(name = "Untitled mission"): Project {
     createdAt: now,
     updatedAt: now,
     mode: "vehicle",
-    start: { body: "earth", site: "starbase" },
+    start: { body: "earth", site: "starbase", view: "planet" },
     vehicle: presetVehicle("saturn-v"),
     schedule: { date: "2026-09-01T12:00:00Z", windowDays: 800, destination: null, scenario: "balanced", spanDays: 365, land: true },
     look: { pathColor: "#FFFFFF", pathWidth: 3, orbits: true, labels: true, dateStamp: true, planetSize: 1, hud: true },
-    camera: { mode: "follow", focus: "earth", keypoints: [], follow: { dir: null, zoom: 1 } },
+    camera: { mode: "follow", focus: "earth", keypoints: [], follow: { dir: null, zoom: 1 }, above: true },
     timing: { duration: 14 },
     output: { aspect: "16:9", resolution: 1080, fps: 30, holdStart: 1, holdEnd: 1.5, credit: true },
   };

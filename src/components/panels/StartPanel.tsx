@@ -1,6 +1,6 @@
 import { BODIES, BODY_IDS, type BodyId } from "../../lib/bodies";
 import { AUTO_SITES, EARTH_ORBITS, SPACEPORTS, START_BODIES, type Destination, type Project } from "../../lib/types";
-import { Field, Section } from "../Controls";
+import { Field, Section, Segmented } from "../Controls";
 import { Tip } from "../Tip";
 
 export type Up = (fn: (p: Project) => Project) => void;
@@ -68,7 +68,7 @@ export function StartPanel({ project, update, onFocus }: { project: Project; upd
                       const clash = d === b || (b !== "earth" && isEarthOrbit(d));
                       return {
                         ...p,
-                        start: { body: b, site: b === "earth" ? (SPACEPORTS.some((s) => s.id === p.start.site) ? p.start.site : "ksc") : `auto-${b}` },
+                        start: { ...p.start, body: b, site: b === "earth" ? (SPACEPORTS.some((s) => s.id === p.start.site) ? p.start.site : "ksc") : `auto-${b}` },
                         schedule: { ...p.schedule, destination: clash ? null : d },
                         camera: { ...p.camera, focus: b },
                       };
@@ -80,6 +80,17 @@ export function StartPanel({ project, update, onFocus }: { project: Project; upd
                 </button>
               ))}
             </div>
+            <Field label="Centre the view on">
+              <Segmented
+                label="Centre the view on"
+                value={project.start.view}
+                options={[
+                  { value: "planet", label: project.start.body === "moon" ? "The Moon" : BODIES[project.start.body].name },
+                  { value: "site", label: project.start.body === "earth" ? "The spaceport" : "The launch site" },
+                ]}
+                onChange={(v) => update((p) => ({ ...p, start: { ...p.start, view: v } }))}
+              />
+            </Field>
             {project.start.body === "earth" ? (
               <>
                 <Field label="Spaceport">

@@ -179,7 +179,8 @@ export class Plan {
  * Adds the legs, events and phases, and the time spent on the ground afterwards.
  */
 export function addLanding(plan: Plan, body: BodyId, launch: Date, t0: number, from: State, airless: boolean): number {
-  const d: Descent = airless ? poweredDescent(body, from.r, from.v) : atmosphericEntry(body, from.r, from.v);
+  const date = dateAt(launch, t0);
+  const d: Descent = airless ? poweredDescent(body, from.r, from.v, date) : atmosphericEntry(body, from.r, from.v, date);
   plan.leg(body, (t) => d.at(t - t0), t0 + d.T, Math.min(20, 0.02 * d.T), (t) => d.tele(t - t0));
   for (const e of d.events) plan.event(t0 + e.dt, e.label);
   const td = t0 + d.T;
