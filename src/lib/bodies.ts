@@ -90,8 +90,12 @@ export function displayRadius(id: BodyId, boost = 1): number {
 export function compress(id: BodyId, distKm: number, boost = 1): number {
   const R = BODIES[id].radiusKm;
   const Rd = displayRadius(id, boost);
-  return Rd * (1 + 1.4 * Math.sqrt(Math.max(0, distKm - R) / R));
+  // √ of the height, softened at the ground so a climb from the pad has no kink
+  const x = Math.max(0, distKm - R) / R;
+  return Rd * (1 + 1.4 * (Math.sqrt(x + SOFT * SOFT) - SOFT));
 }
+/** softening of the √ near the surface (in body radii, squared ≈ 30 km for Earth) */
+export const SOFT = 0.07;
 /** a body-centred vector in km → display offset (AU) */
 export function compressVec(id: BodyId, vKm: V3, boost = 1): V3 {
   const d = len(vKm);

@@ -86,6 +86,8 @@ export interface Project {
     scenario: Scenario;
     /** observer: how many days the video covers */
     spanDays: number;
+    /** land at the destination when it has a surface (else stay in orbit) */
+    land: boolean;
   };
   look: {
     pathColor: string;
@@ -94,8 +96,16 @@ export interface Project {
     labels: boolean;
     dateStamp: boolean;
     planetSize: number;
+    /** speed, altitude, mission timeline and date along the bottom of the video */
+    hud: boolean;
   };
-  camera: { mode: "follow" | "keypoints"; focus: BodyId; keypoints: Keypoint[] };
+  camera: {
+    mode: "follow" | "keypoints";
+    focus: BodyId;
+    keypoints: Keypoint[];
+    /** follow camera: viewing direction (from the craft towards the camera) and zoom factor */
+    follow: { dir: [number, number, number] | null; zoom: number };
+  };
   timing: { duration: number };
   output: { aspect: Aspect; resolution: Resolution; fps: Fps; holdStart: number; holdEnd: number; credit: boolean };
 }
@@ -126,9 +136,9 @@ export function newProject(name = "Untitled mission"): Project {
     mode: "vehicle",
     start: { body: "earth", site: "starbase" },
     vehicle: presetVehicle("saturn-v"),
-    schedule: { date: "2026-09-01T12:00:00Z", windowDays: 800, destination: "moon", scenario: "balanced", spanDays: 365 },
-    look: { pathColor: "#FFFFFF", pathWidth: 3, orbits: true, labels: true, dateStamp: true, planetSize: 1 },
-    camera: { mode: "follow", focus: "earth", keypoints: [] },
+    schedule: { date: "2026-09-01T12:00:00Z", windowDays: 800, destination: "moon", scenario: "balanced", spanDays: 365, land: true },
+    look: { pathColor: "#FFFFFF", pathWidth: 3, orbits: true, labels: true, dateStamp: true, planetSize: 1, hud: true },
+    camera: { mode: "follow", focus: "earth", keypoints: [], follow: { dir: null, zoom: 1 } },
     timing: { duration: 14 },
     output: { aspect: "16:9", resolution: 1080, fps: 30, holdStart: 1, holdEnd: 1.5, credit: true },
   };
@@ -154,7 +164,7 @@ export function coerceProject(raw: unknown): Project {
     vehicle: { ...base.vehicle, ...p.vehicle },
     schedule: { ...base.schedule, ...p.schedule },
     look: { ...base.look, ...p.look },
-    camera: { ...base.camera, ...p.camera },
+    camera: { ...base.camera, ...p.camera, follow: { ...base.camera.follow, ...(p.camera?.follow ?? {}) } },
     timing: { ...base.timing, ...p.timing },
     output: { ...base.output, ...p.output },
   };

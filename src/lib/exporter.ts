@@ -2,7 +2,7 @@ import { BufferTarget, CanvasSource, Mp4OutputFormat, Output, canEncodeVideo, ty
 import { cameraAt, type CameraCtx } from "./camera";
 import { CREDIT, drawOverlay } from "./overlay";
 import { SpaceScene, texturesReady } from "./scene";
-import { dateAt, simAt } from "./timeline";
+import { dateAt, frameWeights, simAt } from "./timeline";
 import { outputSize } from "./types";
 
 export interface ExportProgress {
@@ -73,6 +73,8 @@ export async function exportVideo(ctx: CameraCtx, onProgress: (p: ExportProgress
     // warm up: load every texture before the first frame
     space.update({ date: dateAt(ctx.tl, 0), boost: p.look.planetSize, sim: null, mission: ctx.mission, look: p.look, showSpaceports: false, selectedSpaceport: null });
     await texturesReady();
+    // the HUD's typeface has to be in before the first frame is drawn
+    await Promise.all(['600 40px "Barlow"', '500 40px "Barlow"'].map((f) => document.fonts?.load?.(f).catch(() => null)));
     for (let f = 0; f < frames; f++) {
       if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
       if (document.hidden) {
@@ -82,7 +84,7 @@ export async function exportVideo(ctx: CameraCtx, onProgress: (p: ExportProgress
       const t = f / fps;
       const date = dateAt(ctx.tl, t);
       const sim = p.mode === "vehicle" && ctx.mission?.ok ? simAt(ctx.tl, t) : null;
-      space.update({ date, boost: p.look.planetSize, sim, mission: p.mode === "vehicle" ? ctx.mission : null, look: p.look, showSpaceports: false, selectedSpaceport: null });
+      space.update({ date, boost: p.look.planetSize, sim, mission: p.mode === "vehicle" ? ctx.mission : null, look: p.look, showSpaceports: false, selectedSpaceport: null, frames: sim !== null ? frameWeights(ctx.tl, t) : undefined });
       const cam = cameraAt(ctx, t);
       space.camera.position.set(...cam.pos);
       space.camera.lookAt(...cam.target);
@@ -101,6 +103,7 @@ export async function exportVideo(ctx: CameraCtx, onProgress: (p: ExportProgress
         credit: p.output.credit ? CREDIT : null,
         spaceports: { show: false, selected: null },
         focus: null,
+        hud: p.mode === "vehicle" && p.look.hud && ctx.mission?.ok ? { mission: ctx.mission, tl: ctx.tl, t, date, showDate: p.look.dateStamp } : null,
       });
       await source.add(f / fps, 1 / fps);
       if (f % 3 === 0) {

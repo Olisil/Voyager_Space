@@ -2,11 +2,11 @@ import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { displayPos, displayRadius, type BodyId, type V3 } from "../lib/bodies";
-import { cameraAt, defaultOffset, type CameraCtx } from "../lib/camera";
+import { cameraAt, defaultOffset, followDir, followFrame, type CameraCtx } from "../lib/camera";
 import type { Mission } from "../lib/mission";
 import { drawOverlay } from "../lib/overlay";
 import { SpaceScene, texturesReady } from "../lib/scene";
-import { dateAt, simAt, type Timeline } from "../lib/timeline";
+import { dateAt, frameWeights, simAt, type Timeline } from "../lib/timeline";
 import { SPACEPORTS as SPACEPORT_LIST, type Project } from "../lib/types";
 
 export interface StageHandle {
@@ -17,10 +17,14 @@ export interface StageHandle {
   setView: (offset: V3, focus: BodyId) => void;
 }
 
+type Follow = Project["camera"]["follow"];
+
 /**
  * The 3D view. While editing, the user orbits and zooms around the focused body (the view
- * keeps following it as time moves). While playing or scrubbing in the Camera and Preview
- * steps, the camera runs the project's move (follow the craft, or glide through keypoints).
+ * keeps following it as time moves). With "Follow the craft" in the Camera and Preview
+ * steps the view rides along with the craft at every moment, playing or not; dragging
+ * and zooming then set the angle and distance the follow camera keeps. Keypoint moves run
+ * while playing (and while scrubbing in Preview).
  */
 export const Stage = forwardRef<
   StageHandle,
@@ -29,8 +33,11 @@ export const Stage = forwardRef<
     mission: Mission | null;
     tl: Timeline;
     t: number;
-    /** run the project's camera move instead of the user's free view */
+    /** run the project's keypoint move instead of the user's free view */
     animateCamera: boolean;
+    /** ride along with the craft */
+    follow: boolean;
+    onFollowChange?: (f: Follow) => void;
     focus: BodyId;
     showSpaceports: boolean;
     onPickSpaceport?: (id: string) => void;
@@ -46,6 +53,11 @@ export const Stage = forwardRef<
   const latest = useRef(props);
   latest.current = props;
   const frameReq = useRef(0);
+  // follow camera: the angle and zoom the user picked, and the auto distance of the last frame
+  // (dir null: the automatic angle, which turns from the launch view to the arrival view)
+  const followState = useRef<{ dir: V3 | null; zoom: number; dist: number } | null>(null);
+  const applying = useRef(false);
+  const saveTimer = useRef(0);
 
   const boost = props.project.look.planetSize;
 
@@ -54,7 +66,8 @@ export const Stage = forwardRef<
     if (!s) return;
     const p = latest.current;
     const date = dateAt(p.tl, p.t);
-    const sim = p.project.mode === "vehicle" && p.mission?.ok ? simAt(p.tl, p.t) : null;
+    const vehicleMode = p.project.mode === "vehicle" && !!p.mission?.ok;
+    const sim = vehicleMode ? simAt(p.tl, p.t) : null;
     s.update({
       date,
       boost: p.project.look.planetSize,
@@ -63,9 +76,29 @@ export const Stage = forwardRef<
       look: p.project.look,
       showSpaceports: p.showSpaceports,
       selectedSpaceport: p.project.start.body === "earth" ? p.project.start.site : null,
+      frames: vehicleMode ? frameWeights(p.tl, p.t) : undefined,
     });
     const c = controls.current!;
-    if (p.animateCamera) {
+    const frame = p.follow ? followFrame({ project: p.project, mission: p.mission, tl: p.tl }, p.t) : null;
+    applying.current = true;
+    if (frame) {
+      if (!followState.current) {
+        const f = p.project.camera.follow;
+        followState.current = { dir: f.dir, zoom: f.zoom || 1, dist: frame.dist };
+      }
+      const st = followState.current;
+      st.dist = frame.dist;
+      const dir = st.dir ?? followDir({ project: p.project, mission: p.mission, tl: p.tl }, p.t);
+      c.enabled = true;
+      c.enablePan = false;
+      c.minDistance = frame.dist * 0.08;
+      c.maxDistance = frame.dist * 40;
+      c.target.set(...frame.target);
+      const d = frame.dist * st.zoom;
+      s.camera.position.set(frame.target[0] + dir[0] * d, frame.target[1] + dir[1] * d, frame.target[2] + dir[2] * d);
+      s.camera.lookAt(c.target);
+      lastTarget.current = null;
+    } else if (p.animateCamera) {
       c.enabled = false;
       const ctx: CameraCtx = { project: p.project, mission: p.mission, tl: p.tl, view: viewNow() };
       const pose = cameraAt(ctx, p.t);
@@ -75,6 +108,8 @@ export const Stage = forwardRef<
       lastTarget.current = null;
     } else {
       c.enabled = true;
+      c.enablePan = true;
+      c.maxDistance = Infinity;
       // keep following the focused body as time moves
       const tgt = new THREE.Vector3(...displayPos(p.focus, date, p.project.look.planetSize));
       if (lastTarget.current) s.camera.position.add(tgt.clone().sub(lastTarget.current));
@@ -83,8 +118,9 @@ export const Stage = forwardRef<
       c.minDistance = displayRadius(p.focus, p.project.look.planetSize) * 1.15;
       c.update();
     }
+    applying.current = false;
     s.render();
-    // labels and date
+    // labels, HUD and date
     const ov = ovRef.current!;
     const g = ov.getContext("2d")!;
     const dpr = window.devicePixelRatio || 1;
@@ -126,6 +162,7 @@ export const Stage = forwardRef<
       credit: null,
       spaceports: { show: p.showSpaceports, selected: p.project.start.site, positions: ports },
       focus: p.focus,
+      hud: vehicleMode && p.project.look.hud && p.mission ? { mission: p.mission, tl: p.tl, t: p.t, date, showDate: p.project.look.dateStamp } : null,
     });
   };
 
@@ -177,7 +214,24 @@ export const Stage = forwardRef<
     c.enableDamping = false;
     c.zoomSpeed = 1.2;
     c.rotateSpeed = 0.7;
-    c.addEventListener("change", request);
+    c.addEventListener("change", () => {
+      // the user turned or zoomed the follow camera: keep that angle and distance
+      const st = followState.current;
+      if (!applying.current && st && latest.current.follow) {
+        const o = s.camera.position.clone().sub(c.target);
+        const len = o.length();
+        if (len > 0 && st.dist > 0) {
+          const before = st.dir ?? followDir({ project: latest.current.project, mission: latest.current.mission, tl: latest.current.tl }, latest.current.t);
+          const now: V3 = [o.x / len, o.y / len, o.z / len];
+          // a zoom alone keeps the automatic angle; turning the view fixes the angle
+          if (st.dir || Math.abs(now[0] - before[0]) + Math.abs(now[1] - before[1]) + Math.abs(now[2] - before[2]) > 1e-4) st.dir = now;
+          st.zoom = Math.max(0.05, Math.min(60, len / st.dist));
+          clearTimeout(saveTimer.current);
+          saveTimer.current = window.setTimeout(() => latest.current.onFollowChange?.({ dir: st.dir, zoom: st.zoom }), 250);
+        }
+      }
+      request();
+    });
     controls.current = c;
     const p = latest.current;
     const date = dateAt(p.tl, p.t);
@@ -186,11 +240,15 @@ export const Stage = forwardRef<
     c.target.copy(target);
     lastTarget.current = target.clone();
     texturesReady().then(request);
+    // the HUD's typeface may still be on its way
+    document.fonts?.load?.('600 20px "Barlow"').then(request).catch(() => {});
+    document.fonts?.load?.('500 20px "Barlow"').then(request).catch(() => {});
     // textures stream in: redraw a few times while they arrive
     const iv = setInterval(request, 500);
     setTimeout(() => clearInterval(iv), 8000);
     return () => {
       clearInterval(iv);
+      clearTimeout(saveTimer.current);
       c.dispose();
       s.dispose();
       space.current = null;
@@ -211,10 +269,28 @@ export const Stage = forwardRef<
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.width, props.height]);
 
-  // focus change: look at the new body
-  const prevFocus = useRef(props.focus);
+  // the follow camera's angle comes from the project (e.g. "Reset view", or another project)
+  const fol = props.project.camera.follow;
   useEffect(() => {
-    if (prevFocus.current !== props.focus && space.current) {
+    const st = followState.current;
+    if (!st) return;
+    const want = fol.dir;
+    const sameDir = want === null ? st.dir === null : !!st.dir && Math.abs(want[0] - st.dir[0]) + Math.abs(want[1] - st.dir[1]) + Math.abs(want[2] - st.dir[2]) < 1e-6;
+    if (!sameDir || Math.abs((fol.zoom || 1) - st.zoom) > 1e-6) {
+      st.dir = want;
+      st.zoom = fol.zoom || 1;
+      request();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fol.dir?.[0], fol.dir?.[1], fol.dir?.[2], fol.zoom]);
+
+  // focus change, or leaving the follow camera: look at the focused body
+  const prevFocus = useRef(props.focus);
+  const prevFollow = useRef(props.follow);
+  useEffect(() => {
+    const leftFollow = prevFollow.current && !props.follow;
+    prevFollow.current = props.follow;
+    if ((prevFocus.current !== props.focus || leftFollow) && space.current) {
       prevFocus.current = props.focus;
       const p = latest.current;
       const date = dateAt(p.tl, p.t);

@@ -19,6 +19,7 @@ import {
   type Scenario,
 } from "../lib/types";
 import { capability, PRESETS, presetVehicle, type Stage as VStage } from "../lib/vehicles";
+import { hasAir, LANDABLE } from "../lib/descent";
 import { navigate } from "../router";
 import { ThemeToggle } from "../theme";
 import { ColorPicker, Field, Section, Segmented, Slider, Toggle } from "./Controls";
@@ -152,9 +153,11 @@ function EditorLoaded({ initial }: { initial: Project }) {
 
   // ---- what the view looks at
   const focus: BodyId = project.mode === "vehicle" && (step === "start" || step === "vehicle") ? from : project.camera.focus;
-  // Camera step: scrub to a moment and frame the view by hand; play to preview the move.
-  // Preview & export: playing and scrubbing both show the move.
-  const animateCamera = (step === "camera" && playing) || (step === "export" && (playing || scrubbed));
+  // Follow the craft: in the Camera and Preview steps the view rides along at every moment.
+  // Keypoints: in the Camera step scrub and frame by hand, play to preview the move; in
+  // Preview & export playing and scrubbing both show the move.
+  const followCam = project.mode === "vehicle" && project.camera.mode === "follow" && (step === "camera" || step === "export") && !!mission?.ok;
+  const animateCamera = !followCam && ((step === "camera" && playing) || (step === "export" && (playing || scrubbed)));
   const showPorts = project.mode === "vehicle" && step === "start" && from === "earth";
 
   // ---- export
@@ -307,6 +310,8 @@ function EditorLoaded({ initial }: { initial: Project }) {
               tl={tl}
               t={tClamped}
               animateCamera={animateCamera}
+              follow={followCam}
+              onFollowChange={(f) => update((p) => ({ ...p, camera: { ...p.camera, follow: f } }))}
               focus={focus}
               showSpaceports={showPorts}
               onPickSpaceport={(id) => update((p) => ({ ...p, start: { ...p.start, site: id } }))}
@@ -594,6 +599,14 @@ function SchedulePanel({ project, update, mission, transfers }: { project: Proje
           </div>
         </Section>
       )}
+      {!isOrbit && LANDABLE.includes(s.destination as BodyId) && (
+        <Toggle
+          label={s.destination === "earth" ? "Come down to Earth" : `Land on ${s.destination === "moon" ? "the Moon" : BODIES[s.destination as BodyId].name}`}
+          hint={hasAir(s.destination as BodyId) ? "Entry through the atmosphere, parachutes and touchdown. Off: stay in orbit." : "A powered descent to the surface. Off: stay in orbit."}
+          checked={!!s.land}
+          onChange={(v) => set({ land: v })}
+        />
+      )}
       {mission?.ok && (
         <Section title="Flight plan">
           <dl className="plan">
@@ -602,10 +615,8 @@ function SchedulePanel({ project, update, mission, transfers }: { project: Proje
               <dd>{fmtDate(mission.launch)}</dd>
             </div>
             <div>
-              <dt>Arrival</dt>
-              <dd>
-                {fmtDate(new Date(mission.launch.getTime() + mission.phases[mission.phases.length - 2 >= 0 && !isOrbit ? mission.phases.length - 2 : mission.phases.length - 1].t1 * 1000))}
-              </dd>
+              <dt>{mission.landed ? (mission.to === "earth" ? "Splashdown" : "Touchdown") : isOrbit ? "In orbit" : "Arrival in orbit"}</dt>
+              <dd>{fmtDate(mission.arrival)}</dd>
             </div>
             {mission.dv.map((d) => (
               <div key={d.label}>
@@ -655,7 +666,20 @@ function CameraPanel(props: { project: Project; update: Up; t: number; mission: 
           onChange={(v) => update((p) => ({ ...p, camera: { ...p.camera, mode: v } }))}
         />
       )}
-      {project.mode === "vehicle" && c.mode === "follow" && <p className="hint">The camera keeps your current viewing angle and pulls back as the craft leaves a planet. Turn the view before pressing play to change the angle.</p>}
+      {project.mode === "vehicle" && c.mode === "follow" && (
+        <>
+          <p className="hint">The view rides along with the craft and pulls back as it leaves a planet. Drag to choose the angle, scroll to zoom: the camera keeps both all through the flight.</p>
+          <button
+            type="button"
+            className="btn btn-secondary btn-small"
+            disabled={!c.follow.dir && (c.follow.zoom || 1) === 1}
+            onClick={() => update((p) => ({ ...p, camera: { ...p.camera, follow: { dir: null, zoom: 1 } } }))}
+          >
+            Reset angle and zoom
+          </button>
+        </>
+      )}
+      {!(project.mode === "vehicle" && c.mode === "follow") && (
       <Field label="Look at">
         <select className="input" value={c.focus} onChange={(e) => update((p) => ({ ...p, camera: { ...p.camera, focus: e.target.value as BodyId } }))}>
           {BODY_IDS.map((b) => (
@@ -665,6 +689,7 @@ function CameraPanel(props: { project: Project; update: Up; t: number; mission: 
           ))}
         </select>
       </Field>
+      )}
       {(c.mode === "keypoints" || project.mode === "observer") && (
         <Section title="Keypoints" hint={`At ${fmtClock(props.t)} in the video.`}>
           <button type="button" className="btn btn-secondary btn-wide" onClick={props.onAdd}>
@@ -700,7 +725,15 @@ function CameraPanel(props: { project: Project; update: Up; t: number; mission: 
         <Slider label="Planet size" value={project.look.planetSize} min={0.5} max={3} step={0.1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => setLook({ planetSize: v })} />
         <Toggle label="Orbits" hint="Faint rings where the planets and moons travel." checked={project.look.orbits} onChange={(v) => setLook({ orbits: v })} />
         <Toggle label="Names" checked={project.look.labels} onChange={(v) => setLook({ labels: v })} />
-        <Toggle label="Date and time" hint="Shown in the corner of the video." checked={project.look.dateStamp} onChange={(v) => setLook({ dateStamp: v })} />
+        {project.mode === "vehicle" && (
+          <Toggle label="Mission HUD" hint="Speed, altitude and a timeline of the flight's steps along the bottom, like a launch broadcast." checked={project.look.hud} onChange={(v) => setLook({ hud: v })} />
+        )}
+        <Toggle
+          label="Date and time"
+          hint={project.mode === "vehicle" && project.look.hud ? "Shown in the HUD." : "Shown in the corner of the video."}
+          checked={project.look.dateStamp}
+          onChange={(v) => setLook({ dateStamp: v })}
+        />
       </Section>
     </>
   );
@@ -732,6 +765,17 @@ function ExportPanel(props: {
       <Field label="Frame rate">
         <Segmented label="Frame rate" value={o.fps} options={[24, 25, 30, 60].map((f) => ({ value: f as 24 | 25 | 30 | 60, label: `${f}` }))} onChange={(v) => set({ fps: v })} />
       </Field>
+      {project.mode === "vehicle" && (
+        <Slider
+          label="Length of the long coast"
+          value={project.timing.duration}
+          min={4}
+          max={60}
+          step={1}
+          format={(v) => `${v} s`}
+          onChange={(v) => update((p) => ({ ...p, timing: { duration: v } }))}
+        />
+      )}
       <Slider label="Still at the start" value={o.holdStart} min={0} max={5} step={0.5} format={(v) => `${v} s`} onChange={(v) => set({ holdStart: v })} />
       <Slider label="Still at the end" value={o.holdEnd} min={0} max={5} step={0.5} format={(v) => `${v} s`} onChange={(v) => set({ holdEnd: v })} />
       <Toggle label="Credits in the video" hint="Ephemeris and texture credits, small in the corner. The textures' licence asks for it." checked={o.credit} onChange={(v) => set({ credit: v })} />

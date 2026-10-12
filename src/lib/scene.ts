@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { Line2 } from "three/examples/jsm/lines/Line2.js";
 import { LineGeometry } from "three/examples/jsm/lines/LineGeometry.js";
 import { LineMaterial } from "three/examples/jsm/lines/LineMaterial.js";
+import { LineSegmentsGeometry } from "three/examples/jsm/lines/LineSegmentsGeometry.js";
 import {
   BODIES,
   BODY_IDS,
@@ -18,7 +19,8 @@ import {
   type BodyId,
   type V3,
 } from "./bodies";
-import { vehiclePos, type Mission } from "./mission";
+import { flightPath, type FlightPath } from "./display";
+import type { Mission } from "./mission";
 import { SPACEPORTS } from "./types";
 
 /**
@@ -176,12 +178,13 @@ interface BodyNode {
 }
 
 interface PathLine {
-  seg: Mission["segments"][number];
+  fp: FlightPath;
   holder: THREE.Group;
   full: Line2;
   done: Line2;
-  times: number[];
-  points: V3[];
+  pts: Float32Array;
+  segFull: Float32Array;
+  segDone: Float32Array;
 }
 
 export interface SceneState {
@@ -191,6 +194,8 @@ export interface SceneState {
   sim: number | null;
   mission: Mission | null;
   look: { pathColor: string; pathWidth: number; orbits: boolean };
+  /** whose frame the path is drawn in (see FlightPath.positions) */
+  frames?: Partial<Record<BodyId, number>>;
   showSpaceports: boolean;
   selectedSpaceport: string | null;
 }
@@ -202,10 +207,9 @@ export class SpaceScene {
   nodes = new Map<BodyId, BodyNode>();
   private orbits = new Map<BodyId, THREE.Line>();
   private orbitsKey = "";
-  private paths: PathLine[] = [];
-  private pathKey: Mission | null = null;
-  private pathBoost = 1;
+  private path: PathLine | null = null;
   private vehicle: THREE.Sprite;
+  private vehicleAt = new THREE.Vector3();
   private ports: THREE.Points | null = null;
   private portSel: THREE.Mesh | null = null;
   private stars: THREE.Mesh;
@@ -236,7 +240,7 @@ export class SpaceScene {
 
     for (const id of BODY_IDS) this.nodes.set(id, this.makeBody(id));
 
-    const vmat = new THREE.SpriteMaterial({ map: glowTexture("rgba(255,255,255,1)", "rgba(255,255,255,0.25)"), depthTest: false, sizeAttenuation: false, transparent: true });
+    const vmat = new THREE.SpriteMaterial({ map: glowTexture("rgba(255,255,255,1)", "rgba(255,255,255,0.25)"), depthTest: true, depthWrite: false, sizeAttenuation: false, transparent: true });
     vmat.toneMapped = false;
     this.vehicle = new THREE.Sprite(vmat);
     this.vehicle.renderOrder = 20;
@@ -400,18 +404,18 @@ export class SpaceScene {
   }
 
   private updatePath(s: SceneState) {
-    const m = s.mission;
-    if (m !== this.pathKey || s.boost !== this.pathBoost) {
-      for (const p of this.paths) {
-        p.holder.removeFromParent();
-        p.full.geometry.dispose();
-        p.done.geometry.dispose();
+    const fp = s.sim !== null ? flightPath(s.mission, s.boost) : null;
+    if ((this.path?.fp ?? null) !== fp) {
+      if (this.path) {
+        this.path.holder.removeFromParent();
+        this.path.full.geometry.dispose();
+        this.path.done.geometry.dispose();
+        (this.path.full.material as LineMaterial).dispose();
+        (this.path.done.material as LineMaterial).dispose();
       }
-      this.paths = [];
+      this.path = null;
       this.lineMats = [];
-      this.pathKey = m;
-      this.pathBoost = s.boost;
-      if (m && m.ok) {
+      if (fp && fp.n > 1) {
         const color = new THREE.Color(s.look.pathColor);
         const mk = (opacity: number, width: number) => {
           const mat = new LineMaterial({ color: color.getHex(), linewidth: width, transparent: opacity < 1, opacity, depthTest: true, worldUnits: false });
@@ -420,58 +424,64 @@ export class SpaceScene {
           this.lineMats.push(mat);
           return mat;
         };
-        for (const seg of m.segments) {
-          // denser near both ends, where the path bends and the compression changes fastest
-          const n = seg.name === "Ascent" ? 60 : seg.frame === null ? 600 : 360;
-          const times: number[] = [];
-          const points: V3[] = [];
-          for (let i = 0; i <= n; i++) {
-            const u = i / n;
-            const t = seg.t0 + (seg.t1 - seg.t0) * (/orbit/i.test(seg.name) ? u : (1 - Math.cos(Math.PI * u)) / 2);
-            times.push(t);
-            points.push(seg.at(t, s.boost));
-          }
-          const holder = new THREE.Group();
-          this.scene.add(holder);
-          const g = new LineGeometry();
-          g.setPositions(points.flat());
-          const full = new Line2(g, mk(0.42, Math.max(1, s.look.pathWidth * 0.7)));
-          full.renderOrder = 5;
-          const done = new Line2(new LineGeometry(), mk(1, s.look.pathWidth));
-          done.renderOrder = 6;
-          holder.add(full, done);
-          this.paths.push({ seg, holder, full, done, times, points });
-        }
+        const segFull = new Float32Array((fp.n - 1) * 6);
+        const segDone = new Float32Array(fp.n * 6);
+        const gFull = new LineGeometry();
+        LineSegmentsGeometry.prototype.setPositions.call(gFull, segFull);
+        const gDone = new LineGeometry();
+        LineSegmentsGeometry.prototype.setPositions.call(gDone, segDone);
+        const full = new Line2(gFull, mk(0.42, Math.max(1, s.look.pathWidth * 0.7)));
+        const done = new Line2(gDone, mk(1, s.look.pathWidth));
+        full.renderOrder = 5;
+        done.renderOrder = 6;
+        full.frustumCulled = false;
+        done.frustumCulled = false;
+        const holder = new THREE.Group();
+        holder.add(full, done);
+        this.scene.add(holder);
+        this.path = { fp, holder, full, done, pts: new Float32Array(fp.n * 3), segFull, segDone };
       }
     }
-    for (const m2 of this.lineMats) m2.color.set(s.look.pathColor);
-    // place body-relative segments, and draw the travelled part
-    for (const p of this.paths) {
-      if (p.seg.frame) p.holder.position.set(...displayPos(p.seg.frame, s.date, s.boost));
-      else p.holder.position.set(0, 0, 0);
-      const sim = s.sim;
-      if (sim === null || sim <= p.seg.t0) {
-        p.done.visible = false;
-        continue;
-      }
-      const upto = Math.min(sim, p.seg.t1);
-      const pts: number[] = [];
-      for (let i = 0; i < p.times.length && p.times[i] < upto; i++) pts.push(...p.points[i]);
-      pts.push(...p.seg.at(upto, s.boost));
-      if (pts.length < 6) pts.push(...pts);
-      const g = new LineGeometry();
-      g.setPositions(pts);
-      p.done.geometry.dispose();
-      p.done.geometry = g;
-      p.done.computeLineDistances();
-      p.done.visible = true;
+    for (const m2 of this.lineMats) {
+      m2.color.set(s.look.pathColor);
     }
-    const v = m && s.sim !== null ? vehiclePos(m, s.sim, s.boost) : null;
-    this.vehicle.visible = !!v;
-    if (v) {
-      this.vehicle.position.set(...v);
-      this.vehicle.scale.setScalar(0.028);
+    const P = this.path;
+    if (!P || s.sim === null) {
+      this.vehicle.visible = false;
+      return;
     }
+    (P.full.material as LineMaterial).linewidth = Math.max(1, s.look.pathWidth * 0.7);
+    (P.done.material as LineMaterial).linewidth = s.look.pathWidth;
+    const now = s.sim;
+    const { pts, segFull, segDone } = P;
+    const path = P.fp;
+    path.positions(now, pts, s.frames);
+    const o = path.origin(now);
+    P.holder.position.set(o[0], o[1], o[2]);
+    const n = path.n;
+    for (let i = 0; i < n - 1; i++) {
+      segFull.set(pts.subarray(i * 3, i * 3 + 6), i * 6);
+    }
+    const k = path.doneCount(now);
+    const v = path.vehicle(now, s.frames);
+    const rel: V3 = [v[0] - o[0], v[1] - o[1], v[2] - o[2]];
+    for (let i = 0; i < k - 1; i++) segDone.set(pts.subarray(i * 3, i * 3 + 6), i * 6);
+    if (k >= 1) {
+      segDone.set(pts.subarray((k - 1) * 3, k * 3), (k - 1) * 6);
+      segDone.set(rel, (k - 1) * 6 + 3);
+    }
+    const bump = (g: LineGeometry) => {
+      const a = g.attributes.instanceStart as unknown as { data: THREE.InterleavedBuffer };
+      a.data.needsUpdate = true;
+    };
+    bump(P.full.geometry as LineGeometry);
+    bump(P.done.geometry as LineGeometry);
+    (P.done.geometry as LineGeometry).instanceCount = Math.max(0, k);
+    P.done.visible = k >= 1;
+    this.vehicle.visible = true;
+    this.vehicleAt.set(v[0], v[1], v[2]);
+    this.vehicle.position.copy(this.vehicleAt);
+    this.vehicle.scale.setScalar(0.028);
   }
 
   private updatePorts(s: SceneState) {
@@ -528,6 +538,8 @@ export class SpaceScene {
   }
 
   render() {
+    // the craft is hidden behind planets, but never sinks into the ground it stands on
+    if (this.vehicle.visible) this.vehicle.position.lerpVectors(this.vehicleAt, this.camera.position, 0.02);
     this.stars.position.copy(this.camera.position);
     this.stars.updateMatrixWorld(true);
     this.stars.matrix.setPosition(this.camera.position);

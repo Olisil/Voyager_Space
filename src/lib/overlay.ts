@@ -1,4 +1,5 @@
 import { BODY_IDS, BODIES, displayPos, type BodyId } from "./bodies";
+import { drawHud, type HudInput } from "./hud";
 import type { SpaceScene } from "./scene";
 import { SPACEPORTS } from "./types";
 
@@ -14,6 +15,8 @@ export interface OverlayInput {
   credit: string | null;
   spaceports: { show: boolean; selected: string | null; positions?: { id: string; x: number; y: number }[] };
   focus: BodyId | null;
+  /** mission HUD along the bottom (vehicle mode); it then carries the date too */
+  hud?: HudInput | null;
 }
 
 const FONT = '"Raleway Variable", Raleway, system-ui, sans-serif';
@@ -54,7 +57,8 @@ export function drawOverlay(g: CanvasRenderingContext2D, o: OverlayInput) {
       g.fillText(name, p.x + 18, p.y - 13);
     }
   }
-  if (o.dateStamp) {
+  if (o.hud) drawHud(g, o.hud, o.width, o.height);
+  if (o.dateStamp && !o.hud) {
     const d = o.date;
     const txt = `${d.toISOString().slice(0, 10)}  ${d.toISOString().slice(11, 16)} UTC`;
     g.font = `600 ${Math.round(Math.max(14, o.height * 0.026))}px ${FONT}`;
@@ -66,8 +70,9 @@ export function drawOverlay(g: CanvasRenderingContext2D, o: OverlayInput) {
     g.font = `400 ${Math.round(Math.max(10, o.height * 0.014))}px ${FONT}`;
     g.fillStyle = "rgba(255,255,255,0.55)";
     g.textAlign = "right";
-    g.textBaseline = "bottom";
-    g.fillText(o.credit, o.width - o.width * 0.02, o.height - o.height * 0.02);
+    // with the HUD at the bottom, the credit moves to the top corner
+    g.textBaseline = o.hud ? "top" : "bottom";
+    g.fillText(o.credit, o.width - o.width * 0.02, o.hud ? o.height * 0.02 : o.height - o.height * 0.02);
   }
   g.restore();
 }
