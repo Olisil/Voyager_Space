@@ -24,8 +24,8 @@ const LABEL: Record<string, string> = { leo: "Low Earth orbit", sso: "Sun-synchr
 function MissionThumb({ project }: { project: Project }) {
   const from = BODIES[project.start.body];
   const dest = project.schedule.destination;
-  const toName = project.mode === "observer" ? "Observer" : (LABEL[dest] ?? BODIES[dest as BodyId]?.name ?? "");
-  const to = BODIES[dest as BodyId];
+  const toName = project.mode === "observer" ? "Observer" : !dest ? "destination to come" : (LABEL[dest] ?? BODIES[dest as BodyId]?.name ?? "");
+  const to = dest ? BODIES[dest as BodyId] : undefined;
   return (
     <svg className="thumb thumb-space" viewBox="0 0 320 180" aria-hidden>
       <rect width="320" height="180" fill="#05070b" />

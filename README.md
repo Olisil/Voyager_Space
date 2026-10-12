@@ -9,8 +9,23 @@ sister of Voyager Earth, with the same UI components and project storage.
   keypoint); the camera glides through them on a centripetal Catmull–Rom curve while the planets
   move along their real orbits.
 - **Vehicle path** — launch from a real spaceport (click it on the globe) or an automatic
-  equatorial site on the Moon or Mars, choose or edit a rocket, pick a destination and a scenario,
-  and the flight is drawn as a white line from the pad to the destination orbit.
+  equatorial site on the Moon or Mars, choose or edit a rocket, pick a destination and a scenario
+  in step 3 (a new project has no destination until then), and the flight is drawn as a white
+  line from the pad to the destination orbit.
+
+## Camera
+
+- **Follow the craft** (vehicle path): rides along and pulls back as the craft leaves a planet;
+  dragging and zooming set the angle and distance kept through the flight.
+- **Keypoints**: each keypoint is a diamond above the timeline; drag it (or focus it and use the
+  arrow keys) to change its time, click it to go there. In the Camera and Preview steps the view
+  shows the keypoint move at the playhead; dragging or zooming the view takes it over (to frame a
+  new keypoint) until play is pressed. Between keypoints looking at things far apart the camera
+  swings out so the way between them stays in view (src/lib/camera.ts).
+
+The Reset button left of step 1 appears once anything differs from a new project, and puts every
+setting back (the name stays). Short tips at the top of the steps can be closed; the project menu
+brings them back. The version under the header comes from package.json (vite.config.ts).
 
 ## How the numbers are made
 

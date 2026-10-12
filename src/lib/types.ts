@@ -7,6 +7,8 @@ export type Resolution = 1080 | 1440 | 2160;
 export type Fps = 24 | 25 | 30 | 60;
 export type EarthOrbit = "leo" | "sso" | "gto" | "geo";
 export type Destination = EarthOrbit | BodyId;
+/** what the camera looks at: a body, or the craft */
+export type LookTarget = BodyId | "vehicle";
 export type Scenario = "asap" | "fastest" | "cheapest" | "balanced";
 
 export interface Site {
@@ -63,7 +65,7 @@ export interface Keypoint {
   /** seconds into the video */
   t: number;
   /** what the camera looks at */
-  target: BodyId | "vehicle";
+  target: LookTarget;
   /** camera position relative to the target, scene units (AU) */
   offset: [number, number, number];
 }
@@ -82,7 +84,8 @@ export interface Project {
     /** ISO date-time (UTC) of the start of the window / of the observation */
     date: string;
     windowDays: number;
-    destination: Destination;
+    /** chosen in step 3; null until then */
+    destination: Destination | null;
     scenario: Scenario;
     /** observer: how many days the video covers */
     spanDays: number;
@@ -101,7 +104,8 @@ export interface Project {
   };
   camera: {
     mode: "follow" | "keypoints";
-    focus: BodyId;
+    /** what the free view and new keypoints look at */
+    focus: LookTarget;
     keypoints: Keypoint[];
     /** follow camera: viewing direction (from the craft towards the camera) and zoom factor */
     follow: { dir: [number, number, number] | null; zoom: number };
@@ -136,7 +140,7 @@ export function newProject(name = "Untitled mission"): Project {
     mode: "vehicle",
     start: { body: "earth", site: "starbase" },
     vehicle: presetVehicle("saturn-v"),
-    schedule: { date: "2026-09-01T12:00:00Z", windowDays: 800, destination: "moon", scenario: "balanced", spanDays: 365, land: true },
+    schedule: { date: "2026-09-01T12:00:00Z", windowDays: 800, destination: null, scenario: "balanced", spanDays: 365, land: true },
     look: { pathColor: "#FFFFFF", pathWidth: 3, orbits: true, labels: true, dateStamp: true, planetSize: 1, hud: true },
     camera: { mode: "follow", focus: "earth", keypoints: [], follow: { dir: null, zoom: 1 } },
     timing: { duration: 14 },
@@ -146,8 +150,16 @@ export function newProject(name = "Untitled mission"): Project {
 
 export function demoProject(): Project {
   const p = newProject("Boca Chica to the Moon");
+  p.schedule.destination = "moon";
   return p;
 }
+
+/** The settings a fresh project starts with, for telling whether anything has been set. */
+export function settingsOf(p: Project) {
+  const { mode, start, vehicle, schedule, look, camera, timing, output } = p;
+  return JSON.stringify({ mode, start, vehicle, schedule, look, camera, timing, output });
+}
+export const isPristine = (p: Project) => settingsOf(p) === settingsOf(newProject(p.name));
 
 export function coerceProject(raw: unknown): Project {
   const bad = new Error("This file isn't a Voyager Space project.");

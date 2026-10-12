@@ -190,6 +190,7 @@ export function buildMission(p: Project, transfers: Transfer[] | null): Mission 
   const from = p.start.body;
   const dest = p.schedule.destination;
   const start = new Date(p.schedule.date);
+  if (!dest) return failed(start, from, from, "Pick a destination in step 3.");
   try {
     if (from === "earth" && (dest === "leo" || dest === "sso" || dest === "gto" || dest === "geo")) return earthOrbitMission(p, dest, start);
     const to = dest as BodyId;

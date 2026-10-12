@@ -5,5 +5,6 @@ import { useRoute } from "./router";
 export default function App() {
   const route = useRoute();
   const m = /^\/p\/([^/]+)/.exec(route);
-  return m ? <Editor projectId={decodeURIComponent(m[1])} /> : <Home />;
+  // keyed, so opening another project (e.g. a duplicate) starts a fresh editor
+  return m ? <Editor key={m[1]} projectId={decodeURIComponent(m[1])} /> : <Home />;
 }

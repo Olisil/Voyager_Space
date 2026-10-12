@@ -2564,3 +2564,395 @@ button.source-card:hover {
 button.source-card.on {
   border-color: var(--accent);
 }
+
+/* ================= v0.3 ================= */
+
+/* Version, at the left of the step bar (above the side panel), as in Voyager Earth. */
+.app-version {
+  grid-column: 1;
+  grid-row: 2;
+  align-self: center;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-placeholder);
+  white-space: nowrap;
+}
+@media (max-width: 900px) {
+  .app-version {
+    display: none;
+  }
+}
+
+/* Header, landscape mobile and down: the logo with the breadcrumb under it (Figma: Top navigation / Mobile). */
+@media (max-width: 767px) {
+  .topbar.app-header {
+    flex-wrap: nowrap;
+    height: var(--size--header-height);
+    padding: 0 var(--space--12);
+    gap: var(--space--12);
+  }
+  .app-header-start {
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 1px;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .app-logo img {
+    width: 205px;
+  }
+  .breadcrumb {
+    max-width: 100%;
+  }
+  .app-header .project-name {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+    height: 20px;
+    line-height: 20px;
+  }
+  .app-header .topbar-end {
+    flex: none;
+  }
+}
+@media (max-width: 479px) {
+  .app-logo img {
+    width: 170px;
+  }
+  .app-header .topbar-end {
+    gap: var(--space--8);
+  }
+}
+
+/* Narrow screens: the editor never gets wider than the window; the step bar scrolls sideways. */
+@media (max-width: 900px) {
+  .editor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .editor > .steps {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .editor > .steps::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Reset, left of the first step once anything is set. Quiet like the video shape select. */
+.step-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 36px;
+  padding: 0 10px 0 8px;
+  margin-right: var(--space--8);
+  border: var(--stroke--default) solid var(--dim-grey);
+  border-radius: var(--radius--medium);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--ease), border-color var(--ease);
+}
+.step-reset:hover,
+.step-reset:focus-visible,
+.step-reset.is-active {
+  border-color: var(--persist-signal-green);
+  color: var(--persist-signal-green);
+  outline: none;
+}
+html:not(.dark-mode) .step-reset:hover,
+html:not(.dark-mode) .step-reset:focus-visible,
+html:not(.dark-mode) .step-reset.is-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.confirm {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  padding: var(--space--12);
+  border: var(--stroke--default) solid var(--dim-grey);
+  border-radius: var(--radius--medium);
+  background: var(--bg-surface);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+html:not(.dark-mode) .confirm {
+  background: #ededed;
+}
+.confirm p {
+  margin: 0 0 var(--space--12);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-placeholder);
+}
+.confirm p strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 16px;
+  color: var(--text-primary);
+}
+.confirm-actions {
+  display: flex;
+  gap: var(--space--8);
+}
+
+/* Tips: a short explanation at the top of a step, closed with the cross. */
+.tip {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space--8);
+  margin: 0 0 var(--space--16);
+  padding: 10px var(--space--8) var(--space--12) var(--space--12);
+  border-left: var(--stroke--default) solid var(--nassau-bluegreen);
+  background: var(--bg-surface);
+  font-size: 13px;
+  line-height: 18px;
+}
+.tip-text {
+  flex: 1;
+  min-width: 0;
+}
+.tip-text strong {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.tip-text p {
+  margin: 0;
+  color: var(--text-placeholder);
+}
+.tip-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius--small);
+  background: none;
+  color: var(--text-placeholder);
+  cursor: pointer;
+  transition: color var(--ease), background-color var(--ease);
+}
+.tip-close:hover,
+.tip-close:focus-visible {
+  background: var(--dim-grey);
+  color: var(--persist-text-bright);
+  outline: none;
+}
+
+/* A box that asks for something first (a destination), with the button to go there. */
+.info-box.info-action {
+  margin: 0 0 var(--space--16);
+  border-left: var(--stroke--default) solid var(--nassau-bluegreen);
+}
+.info-action .btn {
+  align-self: flex-start;
+  margin-top: var(--space--8);
+}
+select.input.is-empty {
+  color: var(--text-placeholder);
+}
+select.input.is-empty option,
+select.input.is-empty optgroup {
+  color: var(--text-primary);
+}
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.link-button:hover,
+.link-button:focus-visible {
+  color: var(--text-primary);
+  outline: none;
+}
+.kp-adjusting {
+  margin: var(--space--8) 0 0;
+}
+
+/* Keypoints in the list: a diamond like on the timeline, filled for the one at the playhead. */
+.kp-jump {
+  display: flex;
+  align-items: center;
+}
+.kp-diamond {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: 0 10px 0 1px;
+  border: var(--stroke--default) solid var(--accent);
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+.keypoints li.on .kp-jump {
+  border-color: var(--accent);
+}
+.keypoints li.on .kp-diamond {
+  background: var(--accent);
+}
+
+/* Keypoints on the timeline: diamonds above the scrubber, dragged to change their time. */
+.timeline.has-keypoints {
+  padding-top: 28px;
+}
+.kp-lane {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: calc(100% + 7px);
+  height: 18px;
+  pointer-events: none;
+}
+.kp-marker {
+  position: absolute;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.kp-marker::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border: var(--stroke--default) solid var(--accent);
+  border-radius: 1px;
+  background: var(--bg-page);
+  transform: rotate(45deg);
+  transition: transform 150ms ease, background-color var(--ease);
+}
+.kp-marker:hover::before,
+.kp-marker.dragging::before {
+  transform: rotate(45deg) scale(1.3);
+}
+.kp-marker.on::before,
+.kp-marker.dragging::before {
+  background: var(--accent);
+}
+.kp-marker:focus-visible {
+  outline: none;
+}
+.kp-marker:focus-visible::before {
+  box-shadow: 0 0 0 2px var(--bg-page), 0 0 0 4px var(--accent);
+}
+.kp-marker.dragging {
+  z-index: 1;
+  cursor: grabbing;
+}
+.kp-marker:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Over the video while the view is adjusted by hand. */
+.stage-note {
+  position: absolute;
+  top: var(--space--12);
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--space--12);
+  max-width: calc(100% - 24px);
+  padding: 6px 6px 6px var(--space--12);
+  border-radius: var(--radius--medium);
+  background: rgba(14, 14, 14, 0.72);
+  color: var(--persist-text-bright);
+  font-size: 13px;
+  line-height: 18px;
+  transform: translateX(-50%);
+}
+.stage-note span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stage-note button {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border: var(--stroke--default) solid var(--persist-signal-green);
+  border-radius: var(--radius--small);
+  background: none;
+  color: var(--persist-signal-green);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--ease), color var(--ease);
+}
+.stage-note button:hover,
+.stage-note button:focus-visible {
+  background: var(--persist-signal-green);
+  color: var(--persist-racy-green);
+  outline: none;
+}
+/* Hints over the video wrap on small screens instead of running out of the frame. */
+.stage-hint {
+  width: max-content;
+  max-width: calc(100% - 24px);
+  white-space: normal;
+  text-align: center;
+}
+
+/* Phones: the scrubber gets the whole width, above the play button and the times. */
+@media (max-width: 767px) {
+  .timeline {
+    flex-wrap: wrap;
+    row-gap: var(--space--8);
+    column-gap: var(--space--12);
+    padding: var(--space--16) var(--space--16) var(--space--12);
+  }
+  .timeline.has-keypoints {
+    padding-top: 34px;
+  }
+  .timeline .scrub-wrap {
+    order: -1;
+    flex: 1 1 100%;
+  }
+  .timeline .sim-date {
+    margin-left: auto;
+  }
+}
+/* Touch: bigger keypoint handles (the diamond stays the same size). */
+@media (pointer: coarse) {
+  .kp-lane {
+    height: 30px;
+    bottom: calc(100% + 2px);
+  }
+  .kp-marker {
+    width: 30px;
+    height: 30px;
+    margin-left: -15px;
+  }
+  .timeline.has-keypoints {
+    padding-top: 40px;
+  }
+}

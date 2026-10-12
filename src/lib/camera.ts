@@ -3,14 +3,14 @@ import { flightPath } from "./display";
 import type { Mission } from "./mission";
 import { add, cross, dot, mul, norm, sub, unit } from "./orbits";
 import { dateAt, frameWeights, simAt, type Timeline } from "./timeline";
-import type { Keypoint, Project } from "./types";
+import type { Keypoint, LookTarget, Project } from "./types";
 
 export interface CameraCtx {
   project: Project;
   mission: Mission | null;
   tl: Timeline;
   /** the user's current view: camera position minus target, and what it looks at */
-  view: { offset: V3; focus: BodyId };
+  view: { offset: V3; focus: LookTarget };
 }
 
 export interface CameraPose {
@@ -26,7 +26,7 @@ export function vehicleAt(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, t:
   return fp ? fp.vehicle(simAt(ctx.tl, t), frameWeights(ctx.tl, t)) : null;
 }
 
-function targetPos(ctx: CameraCtx, target: Keypoint["target"], t: number): V3 {
+export function targetPos(ctx: Pick<CameraCtx, "project" | "mission" | "tl">, target: Keypoint["target"], t: number): V3 {
   if (target === "vehicle") return vehicleAt(ctx, t) ?? displayPos("earth", dateAt(ctx.tl, t), boostOf(ctx.project));
   return displayPos(target, dateAt(ctx.tl, t), boostOf(ctx.project));
 }
@@ -170,17 +170,41 @@ export function cameraAt(ctx: CameraCtx, t: number): CameraPose {
     const u = (t - kps[i].t) / Math.max(1e-6, kps[i + 1].t - kps[i].t);
     const s = u * u * (3 - 2 * u);
     const at = (arr: V3[], j: number) => arr[Math.max(0, Math.min(arr.length - 1, j))];
-    return {
-      pos: catmull(at(pos, i - 1), at(pos, i), at(pos, i + 1), at(pos, i + 2), s),
-      target: catmull(at(tgt, i - 1), at(tgt, i), at(tgt, i + 1), at(tgt, i + 2), s),
-    };
+    const target = catmull(at(tgt, i - 1), at(tgt, i), at(tgt, i + 1), at(tgt, i + 2), s);
+    return { pos: swingOut(catmull(at(pos, i - 1), at(pos, i), at(pos, i + 1), at(pos, i + 2), s), target, tgt[i], tgt[i + 1], s), target };
   }
   if (p.mode === "vehicle" && p.camera.mode === "follow") {
     const f = followPose(ctx, t);
     if (f) return f;
   }
-  const target = displayPos(ctx.view.focus, dateAt(ctx.tl, t), boostOf(p));
+  const target = targetPos(ctx, ctx.view.focus, t);
   return { pos: add(target, ctx.view.offset), target };
+}
+
+/**
+ * Between two keypoints that look at things far apart (Mars, then Jupiter), the camera on its
+ * own would pass close to empty space half-way. It swings out instead, to the side of the way
+ * between them and a little above, far enough to keep that way in view, and back in to the
+ * next keypoint. `s` is the eased progress through the segment; nothing changes at the ends.
+ */
+function swingOut(pos: V3, target: V3, a: V3, b: V3, s: number): V3 {
+  const sep = norm(sub(b, a));
+  const bump = Math.sin(Math.PI * s);
+  if (sep < 1e-9 || bump <= 0) return pos;
+  const off = sub(pos, target);
+  const d = norm(off);
+  const want = 1.2 * sep;
+  if (want <= d) return pos;
+  const along = unit(sub(b, a));
+  let side = cross(along, [0, 1, 0]);
+  if (norm(side) < 1e-6) side = cross(along, [1, 0, 0]);
+  side = unit(side);
+  if (d > 0 && dot(side, off) < 0) side = mul(side, -1);
+  const out = unit(add(side, [0, 0.35, 0]));
+  const from = d > 0 ? unit(off) : out;
+  const mix = add(mul(from, 1 - bump), mul(out, bump));
+  const dir = norm(mix) > 1e-6 ? unit(mix) : out;
+  return add(target, mul(dir, d + (want - d) * bump));
 }
 
 /** A sensible first view of a body: from the sunlit side, a little above. */

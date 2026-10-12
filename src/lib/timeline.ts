@@ -34,9 +34,13 @@ export function makeTimeline(p: Project, m: Mission | null): Timeline {
   const holdEnd = p.output.holdEnd;
   let parts: Part[];
   let base: Date;
-  if (p.mode === "observer" || !m || !m.ok || !m.phases.length) {
+  if (p.mode === "observer") {
     base = new Date(p.schedule.date);
     parts = [{ v0: 0, v1: p.timing.duration, t0: 0, t1: p.schedule.spanDays * 86400, name: "Observation", frame: null }];
+  } else if (!m || !m.ok || !m.phases.length) {
+    // no flight yet (no destination, or none found): time stands still at the launch date
+    base = new Date(p.schedule.date);
+    parts = [{ v0: 0, v1: p.timing.duration, t0: 0, t1: 1e-3, name: "Before launch", frame: null }];
   } else {
     base = m.launch;
     parts = [];

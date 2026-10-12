@@ -1,42 +1,26 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import logoUrl from "../assets/voyager-space-logo.svg";
-import { BODIES, BODY_IDS, type BodyId } from "../lib/bodies";
-import { downloadBlob, downloadProjectFile, duplicateProject, getProject, saveProject, slug } from "../lib/db";
+import { BODIES, type BodyId } from "../lib/bodies";
+import { downloadProjectFile, duplicateProject, getProject, saveProject } from "../lib/db";
 import { exportVideo, ExportUnsupportedError, type ExportProgress } from "../lib/exporter";
-import { buildMission, isLocal, MOON_TOF, pickScenario, searchTransfers, totalDv, type Mission, type Transfer } from "../lib/mission";
+import { tenth } from "../lib/format";
+import { buildMission, isLocal, searchTransfers, type Mission, type Transfer } from "../lib/mission";
 import { dateAt, makeTimeline } from "../lib/timeline";
-import {
-  ASPECTS,
-  AUTO_SITES,
-  EARTH_ORBITS,
-  outputSize,
-  SPACEPORTS,
-  START_BODIES,
-  uid,
-  type Aspect,
-  type Destination,
-  type Project,
-  type Scenario,
-} from "../lib/types";
-import { capability, PRESETS, presetVehicle, type Stage as VStage } from "../lib/vehicles";
-import { hasAir, LANDABLE } from "../lib/descent";
+import { ASPECTS, isPristine, newProject, uid, type Aspect, type Keypoint, type LookTarget, type Project } from "../lib/types";
 import { navigate } from "../router";
 import { ThemeToggle } from "../theme";
-import { ColorPicker, Field, Section, Segmented, Slider, Toggle } from "./Controls";
-import { Stage, type StageHandle } from "./Stage";
+import { CameraPanel } from "./panels/CameraPanel";
+import { ExportPanel } from "./panels/ExportPanel";
+import { SchedulePanel } from "./panels/SchedulePanel";
+import { StartPanel } from "./panels/StartPanel";
+import { VehiclePanel } from "./panels/VehiclePanel";
+import { Stage, type CamMode, type StageHandle } from "./Stage";
+import { Timeline } from "./Timeline";
+import { showAllTips, useClosedTips } from "./Tip";
 
 type Step = "start" | "vehicle" | "schedule" | "camera" | "export";
 const STEP_LABEL: Record<Step, string> = { start: "Start", vehicle: "Vehicle", schedule: "Schedule & Destination", camera: "Camera", export: "Preview & export" };
 const NEXT_LABEL: Record<Step, string> = { start: "Next: choose vehicle", vehicle: "Next: schedule & destination", schedule: "Next: camera", camera: "Next: preview & export", export: "" };
-
-const fmtDate = (d: Date) => d.toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }) + " UTC";
-const fmtDur = (s: number) => {
-  if (s < 3600) return `${Math.round(s / 60)} min`;
-  if (s < 2 * 86400) return `${(s / 3600).toFixed(1)} h`;
-  if (s < 365 * 86400) return `${Math.round(s / 86400)} days`;
-  return `${(s / 86400 / 365.25).toFixed(1)} years`;
-};
-const fmtClock = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 
 export function Editor({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<Project | null>(null);
@@ -54,7 +38,7 @@ export function Editor({ projectId }: { projectId: string }) {
       </div>
     );
   if (!project) return null;
-  return <EditorLoaded initial={project} />;
+  return <EditorLoaded key={project.id} initial={project} />;
 }
 
 function EditorLoaded({ initial }: { initial: Project }) {
@@ -63,9 +47,13 @@ function EditorLoaded({ initial }: { initial: Project }) {
   const [step, setStep] = useState<Step>("start");
   const [t, setT] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [scrubbed, setScrubbed] = useState(false);
   const [menu, setMenu] = useState(false);
+  // keypoints: the user has taken the view by hand; playing gives it back to the camera move
+  const [override, setOverride] = useState(false);
+  const [askReset, setAskReset] = useState(false);
+  const resetBtn = useRef<HTMLButtonElement>(null);
   const stage = useRef<StageHandle>(null);
+  const tipsClosed = useClosedTips() !== "";
 
   // autosave
   useEffect(() => {
@@ -77,18 +65,28 @@ function EditorLoaded({ initial }: { initial: Project }) {
     return () => document.documentElement.classList.remove("editor-open");
   }, []);
 
-  const steps: Step[] = project.mode === "vehicle" ? ["start", "vehicle", "schedule", "camera", "export"] : ["start", "schedule", "camera", "export"];
+  const vehicle = project.mode === "vehicle";
+  const steps: Step[] = vehicle ? ["start", "vehicle", "schedule", "camera", "export"] : ["start", "schedule", "camera", "export"];
 
   // ---- the mission
   const from = project.start.body;
   const dest = project.schedule.destination;
-  const helioDest = project.mode === "vehicle" && dest in BODIES && dest !== from && !isLocal(from, dest as BodyId);
+  const helioDest = vehicle && !!dest && dest in BODIES && dest !== from && !isLocal(from, dest as BodyId);
   const transfers = useMemo<Transfer[] | null>(
     () => (helioDest ? searchTransfers(from, dest as BodyId, new Date(project.schedule.date), project.schedule.windowDays) : null),
     [helioDest, from, dest, project.schedule.date, project.schedule.windowDays],
   );
-  const mission = useMemo<Mission | null>(() => (project.mode === "vehicle" ? buildMission(project, transfers) : null), [project.mode, project.start, project.schedule, project.vehicle, project.timing, transfers]);
-  const tl = useMemo(() => makeTimeline(project, mission), [project, mission]);
+  const mission = useMemo<Mission | null>(() => (vehicle ? buildMission(project, transfers) : null), [project.mode, project.start, project.schedule, project.vehicle, project.timing, transfers]);
+  const flightOk = vehicle && !!mission?.ok;
+  // vehicle mode without a flight yet: why, for the Camera and Preview steps
+  const noFlight = !vehicle || flightOk ? null : !dest ? "Choose a destination in step 3, Schedule & destination." : (mission?.message ?? "This flight couldn't be worked out.");
+  const o = project.output;
+  const tl = useMemo(
+    () => makeTimeline(project, mission),
+    // the timeline only reads these
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [project.mode, project.schedule.date, project.schedule.spanDays, project.timing.duration, o.holdStart, o.holdEnd, mission],
+  );
   const tClamped = Math.min(t, tl.total);
 
   // ---- playback
@@ -112,10 +110,15 @@ function EditorLoaded({ initial }: { initial: Project }) {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [playing, tl.total]);
+  const timelineOff = vehicle && !flightOk;
   const togglePlay = () => {
-    if (!playing && t >= tl.total - 0.01) setT(0);
+    if (timelineOff) return;
+    if (!playing) {
+      if (t >= tl.total - 0.01) setT(0);
+      // playing shows the camera move again
+      setOverride(false);
+    }
     setPlaying(!playing);
-    setScrubbed(true);
   };
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -132,7 +135,7 @@ function EditorLoaded({ initial }: { initial: Project }) {
 
   const goStep = (s: Step) => {
     setPlaying(false);
-    setScrubbed(false);
+    setOverride(false);
     setStep(s);
   };
 
@@ -151,14 +154,64 @@ function EditorLoaded({ initial }: { initial: Project }) {
   const fw = Math.max(50, Math.min(area.w - pad * 2, (area.h - pad * 2) * ratio));
   const fh = fw / ratio;
 
-  // ---- what the view looks at
-  const focus: BodyId = project.mode === "vehicle" && (step === "start" || step === "vehicle") ? from : project.camera.focus;
-  // Follow the craft: in the Camera and Preview steps the view rides along at every moment.
-  // Keypoints: in the Camera step scrub and frame by hand, play to preview the move; in
-  // Preview & export playing and scrubbing both show the move.
-  const followCam = project.mode === "vehicle" && project.camera.mode === "follow" && (step === "camera" || step === "export") && !!mission?.ok;
-  const animateCamera = !followCam && ((step === "camera" && playing) || (step === "export" && (playing || scrubbed)));
-  const showPorts = project.mode === "vehicle" && step === "start" && from === "earth";
+  // ---- what the view does
+  const cam = project.camera;
+  const focus: LookTarget = vehicle && (step === "start" || step === "vehicle") ? from : cam.focus;
+  const camStep = step === "camera" || step === "export";
+  const usesKeypoints = !vehicle || cam.mode === "keypoints";
+  // Camera and Preview steps: the follow camera, or the keypoint move (also when paused, so
+  // what you see is what gets rendered); without keypoints the view is free.
+  const camMode: CamMode = !camStep ? "free" : vehicle && cam.mode === "follow" && flightOk ? "follow" : usesKeypoints && cam.keypoints.length && !timelineOff ? "keypoints" : "free";
+  const markers = camStep && usesKeypoints && !timelineOff ? cam.keypoints : null;
+  const showPorts = vehicle && step === "start" && from === "earth";
+
+  // a new camera mode, or no keypoints left: nothing to give back
+  useEffect(() => setOverride(false), [cam.mode, cam.keypoints.length === 0]);
+
+  const setFocus = (target: LookTarget) => setProject((p) => (p.camera.focus === target ? p : { ...p, camera: { ...p.camera, focus: target }, updatedAt: Date.now() }));
+
+  // ---- keypoints
+  const addKeypoint = () => {
+    const v = stage.current?.currentView();
+    if (!v) return;
+    const at = tenth(tClamped);
+    const k: Keypoint = { id: uid(), t: at, target: v.target, offset: v.offset };
+    // one keypoint per moment: adding where one is replaces it
+    update((p) => ({ ...p, camera: { ...p.camera, mode: "keypoints", keypoints: [...p.camera.keypoints.filter((x) => Math.abs(x.t - at) >= 0.05), k] } }));
+    setPlaying(false);
+    setT(at);
+    setOverride(false);
+  };
+  const moveKeypoint = (id: string, at: number) => {
+    update((p) => ({ ...p, camera: { ...p.camera, keypoints: p.camera.keypoints.map((k) => (k.id === id ? { ...k, t: at } : k)) } }));
+    setPlaying(false);
+    setT(at);
+    setOverride(false);
+  };
+  const goToKeypoint = (k: Keypoint) => {
+    setPlaying(false);
+    setT(k.t);
+    setOverride(false);
+  };
+  const lookAt = (target: LookTarget) => {
+    setFocus(target);
+    stage.current?.frameBody(target);
+  };
+
+  // ---- reset
+  const pristine = useMemo(() => isPristine(project), [project]);
+  const reset = () => {
+    const fresh = newProject(project.name);
+    setProject((p) => ({ ...fresh, id: p.id, name: p.name, createdAt: p.createdAt, updatedAt: Date.now() }));
+    setAskReset(false);
+    setPlaying(false);
+    setOverride(false);
+    setT(0);
+    setStep("start");
+    setResult(null);
+    setExportError(null);
+    requestAnimationFrame(() => stage.current?.frameBody(fresh.start.body));
+  };
 
   // ---- export
   const [progress, setProgress] = useState<ExportProgress | null>(null);
@@ -167,13 +220,14 @@ function EditorLoaded({ initial }: { initial: Project }) {
   const abort = useRef<AbortController | null>(null);
   const render = async () => {
     setPlaying(false);
+    setOverride(false);
     setExportError(null);
     setResult(null);
     abort.current = new AbortController();
     setProgress({ frame: 0, frames: 1, elapsedMs: 0, paused: false });
     try {
-      const view = stage.current?.view() ?? { offset: [0.05, 0.02, 0.05] as [number, number, number], focus };
-      const r = await exportVideo({ project, mission, tl, view }, setProgress, abort.current.signal);
+      const v = stage.current?.currentView() ?? { target: focus, offset: [0.05, 0.02, 0.05] as [number, number, number] };
+      const r = await exportVideo({ project, mission, tl, view: { offset: v.offset, focus: v.target } }, setProgress, abort.current.signal);
       setResult({ url: URL.createObjectURL(r.blob), blob: r.blob, w: r.width, h: r.height });
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setExportError(e instanceof ExportUnsupportedError ? e.message : `The render stopped: ${e instanceof Error ? e.message : e}`);
@@ -184,6 +238,7 @@ function EditorLoaded({ initial }: { initial: Project }) {
 
   const i = steps.indexOf(step);
   const next = steps[i + 1];
+  const warn = vehicle && !flightOk && step !== "start" && step !== "vehicle" ? (!dest ? (step === "schedule" ? "Choose a destination to plan the flight." : "Choose a destination in step 3 to plan the flight.") : mission?.message) : null;
 
   return (
     <div className="editor">
@@ -228,6 +283,11 @@ function EditorLoaded({ initial }: { initial: Project }) {
                 >
                   Duplicate project
                 </button>
+                {tipsClosed && (
+                  <button type="button" role="menuitem" onClick={() => (setMenu(false), showAllTips())}>
+                    Show the tips again
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -235,7 +295,26 @@ function EditorLoaded({ initial }: { initial: Project }) {
         </div>
       </header>
 
+      <div className="app-version">Version {__APP_VERSION__}</div>
+
       <nav className="steps" aria-label="Steps">
+        {!pristine && (
+          <button
+            ref={resetBtn}
+            type="button"
+            className={`step-reset${askReset ? " is-active" : ""}`}
+            aria-haspopup="dialog"
+            aria-expanded={askReset}
+            title="Reset all settings"
+            onClick={() => setAskReset(!askReset)}
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+              <path d="M3.2 6.2A5 5 0 1 1 3 9.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              <path d="M2.6 2.6v3.9h3.9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Reset
+          </button>
+        )}
         {steps.map((s, n) => (
           <button key={s} type="button" className={`step${s === step ? " on" : ""}`} aria-current={s === step ? "step" : undefined} onClick={() => goStep(s)}>
             <span className="step-num">{n + 1}</span>
@@ -250,6 +329,7 @@ function EditorLoaded({ initial }: { initial: Project }) {
           ))}
         </select>
       </nav>
+      {askReset && !pristine && <ResetConfirm anchor={resetBtn.current} onReset={reset} onClose={() => setAskReset(false)} />}
 
       <aside className="panel">
         <div className="panel-body">
@@ -261,21 +341,13 @@ function EditorLoaded({ initial }: { initial: Project }) {
               project={project}
               update={update}
               t={tClamped}
-              mission={mission}
-              onAdd={() => {
-                const v = stage.current?.view();
-                if (!v) return;
-                update((p) => ({ ...p, camera: { ...p.camera, mode: "keypoints", keypoints: [...p.camera.keypoints, { id: uid(), t: Math.round(tClamped * 10) / 10, target: v.focus, offset: v.offset }] } }));
-              }}
-              onJump={(k) => {
-                setPlaying(false);
-                setScrubbed(false);
-                setT(k.t);
-                if (k.target !== "vehicle") {
-                  update((p) => ({ ...p, camera: { ...p.camera, focus: k.target as BodyId } }));
-                  requestAnimationFrame(() => stage.current?.setView(k.offset, k.target as BodyId));
-                }
-              }}
+              noFlight={noFlight}
+              override={override && camMode === "keypoints"}
+              onAdd={addKeypoint}
+              onJump={goToKeypoint}
+              onRelease={() => setOverride(false)}
+              onLookAt={lookAt}
+              onGoSchedule={() => goStep("schedule")}
             />
           )}
           {step === "export" && (
@@ -283,11 +355,13 @@ function EditorLoaded({ initial }: { initial: Project }) {
               project={project}
               update={update}
               total={tl.total}
+              noFlight={noFlight}
               progress={progress}
               result={result}
               error={exportError}
               onRender={render}
               onCancel={() => abort.current?.abort()}
+              onGoSchedule={() => goStep("schedule")}
             />
           )}
         </div>
@@ -309,8 +383,13 @@ function EditorLoaded({ initial }: { initial: Project }) {
               mission={mission}
               tl={tl}
               t={tClamped}
-              animateCamera={animateCamera}
-              follow={followCam}
+              camMode={camMode}
+              override={override}
+              onOverride={(target) => {
+                setPlaying(false);
+                setOverride(true);
+                setFocus(target);
+              }}
               onFollowChange={(f) => update((p) => ({ ...p, camera: { ...p.camera, follow: f } }))}
               focus={focus}
               showSpaceports={showPorts}
@@ -319,495 +398,87 @@ function EditorLoaded({ initial }: { initial: Project }) {
               height={fh}
             />
             {showPorts && <div className="stage-hint">Drag to turn the globe. Click a spaceport to launch from it.</div>}
-            {mission && !mission.ok && step !== "start" && step !== "vehicle" && <div className="stage-hint stage-warn">{mission.message}</div>}
-          </div>
-        </div>
-        <div className="timeline">
-          <button type="button" className="play" aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>
-            {playing ? (
-              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
-                <path d="M4 3h3v10H4zM9 3h3v10H9z" fill="currentColor" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
-                <path d="M4 2.5v11l9-5.5z" fill="currentColor" />
-              </svg>
+            {warn && <div className="stage-hint stage-warn">{warn}</div>}
+            {override && camMode === "keypoints" && (
+              <div className="stage-note" role="status">
+                <span>Adjusting the view by hand</span>
+                <button type="button" onClick={() => setOverride(false)}>
+                  Back to the camera move
+                </button>
+              </div>
             )}
-          </button>
-          <span className="time">
-            {fmtClock(tClamped)} <span className="time-total">/ {fmtClock(tl.total)}</span>
-          </span>
-          <div className="scrub-wrap">
-            <input
-              className="scrub"
-              type="range"
-              min={0}
-              max={tl.total}
-              step={0.01}
-              value={tClamped}
-              aria-label="Time"
-              onChange={(e) => {
-                setPlaying(false);
-                setScrubbed(true);
-                setT(parseFloat(e.target.value));
-              }}
-            />
-            <div className="scrub-marks" aria-hidden>
-              {tl.marks.map((m, n) => (
-                <span key={n} className="mark mark-sign" style={{ left: `${(m / tl.total) * 100}%` }} />
-              ))}
-            </div>
           </div>
-          <span className="sim-date">{fmtDate(dateAt(tl, tClamped))}</span>
         </div>
+        <Timeline
+          t={tClamped}
+          total={tl.total}
+          playing={playing}
+          disabled={timelineOff}
+          date={dateAt(tl, tClamped)}
+          marks={flightOk ? tl.marks : []}
+          keypoints={markers}
+          onTogglePlay={togglePlay}
+          onScrub={(v) => {
+            setPlaying(false);
+            setT(v);
+          }}
+          onKeypointMove={moveKeypoint}
+          onKeypointPick={goToKeypoint}
+        />
       </main>
     </div>
   );
 }
 
-// ---------------------------------------------------------------- panels
-
-type Up = (fn: (p: Project) => Project) => void;
-
-function StartPanel({ project, update, onFocus }: { project: Project; update: Up; onFocus: (b: BodyId) => void }) {
-  const m = project.mode;
+/** "Reset all settings?" under the reset button. */
+function ResetConfirm({ anchor, onReset, onClose }: { anchor: HTMLElement | null; onReset: () => void; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const place = () => {
+      const r = anchor?.getBoundingClientRect();
+      if (!r) return;
+      const w = ref.current?.offsetWidth ?? 300;
+      setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)), top: r.bottom + 6 });
+    };
+    place();
+    window.addEventListener("resize", place);
+    // the page scrolls on small screens, and the step bar sideways
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [anchor]);
+  useEffect(() => {
+    cancel.current?.focus();
+    const key = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const down = (e: PointerEvent) => {
+      const el = e.target as Node;
+      if (!ref.current?.contains(el) && !anchor?.contains(el)) onClose();
+    };
+    window.addEventListener("keydown", key);
+    window.addEventListener("pointerdown", down);
+    return () => {
+      window.removeEventListener("keydown", key);
+      window.removeEventListener("pointerdown", down);
+    };
+  }, [anchor, onClose]);
   return (
-    <>
-      <header className="panel-intro">
-        <h2>Godspeed!</h2>
-        <p>Choose type of visualization</p>
-      </header>
-      <div className="source-cards">
-        <button type="button" className={`source-card${m === "observer" ? " on" : ""}`} aria-pressed={m === "observer"} onClick={() => update((p) => ({ ...p, mode: "observer", camera: { ...p.camera, mode: "keypoints" } }))}>
-          <span className="source-title">Space observer</span>
-          <span className="source-hint">Define a path through the solar system, through keypoints.</span>
+    <div ref={ref} className="confirm" role="dialog" aria-label="Reset all settings" style={pos ?? { visibility: "hidden" }}>
+      <p>
+        <strong>Reset all settings?</strong>
+        Every step goes back to how a new project starts. The project name stays.
+      </p>
+      <div className="confirm-actions">
+        <button type="button" className="btn btn-small btn-danger" onClick={onReset}>
+          Reset
         </button>
-        <button type="button" className={`source-card${m === "vehicle" ? " on" : ""}`} aria-pressed={m === "vehicle"} onClick={() => update((p) => ({ ...p, mode: "vehicle", camera: { ...p.camera, mode: p.camera.keypoints.length ? p.camera.mode : "follow" } }))}>
-          <span className="source-title">Vehicle path</span>
-          <span className="source-hint">Launch a spaceship and follow the path to a destination.</span>
+        <button ref={cancel} type="button" className="btn btn-small" onClick={onClose}>
+          Cancel
         </button>
       </div>
-      {m === "observer" ? (
-        <Section title="Look at" hint="Where the view starts. Drag to turn around it, scroll to zoom.">
-          <div className="chips">
-            {BODY_IDS.map((b) => (
-              <button
-                key={b}
-                type="button"
-                className={`chip${project.camera.focus === b ? " on" : ""}`}
-                onClick={() => {
-                  update((p) => ({ ...p, camera: { ...p.camera, focus: b } }));
-                  onFocus(b);
-                }}
-              >
-                <span className="dot" style={{ background: BODIES[b].color }} aria-hidden />
-                {BODIES[b].name}
-              </button>
-            ))}
-          </div>
-        </Section>
-      ) : (
-        <Section title="Starting point">
-          <div className="chips">
-            {START_BODIES.map((b) => (
-              <button
-                key={b}
-                type="button"
-                className={`chip${project.start.body === b ? " on" : ""}`}
-                onClick={() =>
-                  update((p) => ({
-                    ...p,
-                    start: { body: b, site: b === "earth" ? (SPACEPORTS.some((s) => s.id === p.start.site) ? p.start.site : "ksc") : `auto-${b}` },
-                    schedule: { ...p.schedule, destination: p.schedule.destination === b ? (b === "earth" ? "moon" : "earth") : b !== "earth" && ["leo", "sso", "gto", "geo"].includes(p.schedule.destination) ? "earth" : p.schedule.destination },
-                    camera: { ...p.camera, focus: b },
-                  }))
-                }
-              >
-                <span className="dot" style={{ background: BODIES[b].color }} aria-hidden />
-                {BODIES[b].name}
-              </button>
-            ))}
-          </div>
-          {project.start.body === "earth" ? (
-            <>
-              <Field label="Spaceport">
-                <select className="input" value={project.start.site} onChange={(e) => update((p) => ({ ...p, start: { ...p.start, site: e.target.value } }))}>
-                  {SPACEPORTS.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name} · {s.country}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <p className="hint">Or turn the globe and click a spaceport. Sites near the equator get the most help from Earth's spin.</p>
-            </>
-          ) : (
-            <div className="info-box">
-              <strong>{AUTO_SITES[project.start.body]?.name}</strong>
-              <span>Picked automatically: near the equator, where the {BODIES[project.start.body].name}'s spin gives the most help into orbit.</span>
-            </div>
-          )}
-        </Section>
-      )}
-    </>
-  );
-}
-
-function VehiclePanel({ project, update }: { project: Project; update: Up }) {
-  const v = project.vehicle;
-  const g = (BODIES[project.start.body].mu / BODIES[project.start.body].radiusKm ** 2) * 1000;
-  const cap = capability(v, g);
-  const setStage = (i: number, patch: Partial<VStage>) => update((p) => ({ ...p, vehicle: { ...p.vehicle, preset: "custom", stages: p.vehicle.stages.map((s, j) => (j === i ? { ...s, ...patch } : s)) } }));
-  const num = (val: number, onChange: (n: number) => void, label: string, step = 1) => (
-    <input className="input input-num" type="number" aria-label={label} value={val} step={step} min={0} onChange={(e) => onChange(Math.max(0, parseFloat(e.target.value) || 0))} />
-  );
-  return (
-    <>
-      <header className="panel-intro">
-        <h2>Your vehicle</h2>
-        <p>Start from a real rocket, then change any number. The rocket equation tells how much speed change (Δv) it can give your payload.</p>
-      </header>
-      <Section title="Start from">
-        <div className="presets">
-          {PRESETS.map((pr) => (
-            <button key={pr.id} type="button" className={`preset${v.preset === pr.id ? " on" : ""}`} onClick={() => update((p) => ({ ...p, vehicle: presetVehicle(pr.id) }))}>
-              <strong>{pr.name}</strong>
-              <span>{pr.hint}</span>
-            </button>
-          ))}
-        </div>
-      </Section>
-      <Section title="Stages" hint="Mass and propellant in tonnes, engine efficiency (Isp) in seconds, thrust in kilonewtons.">
-        <div className="stages">
-          <div className="stage-row stage-head" aria-hidden>
-            <span>Stage</span>
-            <span>Mass t</span>
-            <span>Prop. t</span>
-            <span>Isp s</span>
-            <span>Thrust kN</span>
-            <span />
-          </div>
-          {v.stages.map((s, i) => (
-            <div key={i} className="stage-row">
-              <input className="input" aria-label={`Stage ${i + 1} name`} value={s.name} onChange={(e) => setStage(i, { name: e.target.value })} />
-              {num(s.massT, (n) => setStage(i, { massT: n }), `Stage ${i + 1} mass`, 0.1)}
-              {num(s.propT, (n) => setStage(i, { propT: Math.min(n, s.massT) }), `Stage ${i + 1} propellant`, 0.1)}
-              {num(s.isp, (n) => setStage(i, { isp: n }), `Stage ${i + 1} Isp`)}
-              {num(s.thrustKN, (n) => setStage(i, { thrustKN: n }), `Stage ${i + 1} thrust`)}
-              <button type="button" className="icon-btn" aria-label={`Remove stage ${i + 1}`} onClick={() => update((p) => ({ ...p, vehicle: { ...p.vehicle, preset: "custom", stages: p.vehicle.stages.filter((_, j) => j !== i) } }))}>
-                ×
-              </button>
-              <span className="stage-dv">{cap.perStage[i]?.toFixed(2)} km/s</span>
-            </div>
-          ))}
-          <button type="button" className="btn btn-small" onClick={() => update((p) => ({ ...p, vehicle: { ...p.vehicle, preset: "custom", stages: [...p.vehicle.stages, { name: `Stage ${p.vehicle.stages.length + 1}`, massT: 20, propT: 17, isp: 340, thrustKN: 300 }] } }))}>
-            Add stage
-          </button>
-        </div>
-        <Field label="Payload, tonnes">{num(v.payloadT, (n) => update((p) => ({ ...p, vehicle: { ...p.vehicle, preset: "custom", payloadT: n } })), "Payload", 0.1)}</Field>
-        <Toggle label="Refuel in orbit" hint="The last stage is filled up again in low orbit by tanker flights." checked={v.refuel} onChange={(x) => update((p) => ({ ...p, vehicle: { ...p.vehicle, refuel: x } }))} />
-      </Section>
-      <dl className="stats">
-        <div>
-          <dt>Δv available</dt>
-          <dd>{cap.dv.toFixed(2)} km/s</dd>
-        </div>
-        <div>
-          <dt>Thrust to weight</dt>
-          <dd className={cap.twr < 1.05 ? "bad" : ""}>{cap.twr.toFixed(2)}</dd>
-        </div>
-      </dl>
-      {cap.twr < 1.05 && <p className="error">Too heavy to lift off from {BODIES[project.start.body].name}: thrust must exceed weight.</p>}
-    </>
-  );
-}
-
-function SchedulePanel({ project, update, mission, transfers }: { project: Project; update: Up; mission: Mission | null; transfers: Transfer[] | null }) {
-  const s = project.schedule;
-  const set = (patch: Partial<Project["schedule"]>) => update((p) => ({ ...p, schedule: { ...p.schedule, ...patch } }));
-  const local = s.date.slice(0, 16);
-  const dateField = (
-    <Field label={project.mode === "vehicle" ? "Earliest launch (UTC)" : "Start date (UTC)"}>
-      <input className="input" type="datetime-local" value={local} min="1900-01-01T00:00" max="2199-12-31T23:59" onChange={(e) => e.target.value && set({ date: `${e.target.value}:00Z` })} />
-    </Field>
-  );
-  if (project.mode === "observer")
-    return (
-      <>
-        <header className="panel-intro">
-          <h2>When</h2>
-          <p>The planets are where they really were or will be on these dates.</p>
-        </header>
-        {dateField}
-        <Slider label="Time covered" value={s.spanDays} min={1} max={3650} step={1} format={(v) => (v < 365 ? `${v} days` : `${(v / 365.25).toFixed(1)} years`)} onChange={(v) => set({ spanDays: v })} />
-        <Slider label="Video length" value={project.timing.duration} min={4} max={120} step={1} format={(v) => `${v} s`} onChange={(v) => update((p) => ({ ...p, timing: { duration: v } }))} />
-      </>
-    );
-  const from = project.start.body;
-  const g = (BODIES[from].mu / BODIES[from].radiusKm ** 2) * 1000;
-  const cap = capability(project.vehicle, g);
-  const need = mission?.ok ? totalDv(mission) : 0;
-  const dests: { group: string; items: { id: Destination; name: string; hint?: string }[] }[] = [];
-  if (from === "earth") dests.push({ group: "Earth orbits", items: EARTH_ORBITS.map((o) => ({ id: o.id, name: o.name, hint: o.hint })) });
-  dests.push({
-    group: "Moon and planets",
-    items: (["earth", "moon", "mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune"] as BodyId[]).filter((b) => b !== from).map((b) => ({ id: b, name: BODIES[b].name })),
-  });
-  const isOrbit = ["leo", "sso", "gto", "geo"].includes(s.destination);
-  const scenarios: { id: Scenario; name: string }[] = [
-    { id: "asap", name: "As soon as possible" },
-    { id: "fastest", name: "Fastest" },
-    { id: "cheapest", name: "Least fuel" },
-    { id: "balanced", name: "Balanced" },
-  ];
-  const local2 = isLocal(from, s.destination as BodyId);
-  return (
-    <>
-      <header className="panel-intro">
-        <h2>Schedule & destination</h2>
-        <p>Pick where to go and when you'd like to leave. Transfer windows come from the real planet positions.</p>
-      </header>
-      <Field label="Destination">
-        <select className="input" value={s.destination} onChange={(e) => set({ destination: e.target.value as Destination })}>
-          {dests.map((d) => (
-            <optgroup key={d.group} label={d.group}>
-              {d.items.map((it) => (
-                <option key={it.id} value={it.id}>
-                  {it.name}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      </Field>
-      {isOrbit && <p className="hint">{EARTH_ORBITS.find((o) => o.id === s.destination)?.hint}</p>}
-      {dateField}
-      {!isOrbit && !local2 && <Slider label="Window to search" value={s.windowDays} min={30} max={2000} step={10} format={(v) => (v < 365 ? `${v} days` : `${(v / 365.25).toFixed(1)} years`)} onChange={(v) => set({ windowDays: v })} />}
-      {!isOrbit && (
-        <Section title="Scenario">
-          <div className="scenarios">
-            {scenarios.map((sc) => {
-              const tr = transfers ? pickScenario(transfers, sc.id) : null;
-              const detail = local2 ? `${MOON_TOF[sc.id]} days` : tr ? `Leave ${tr.depart.toISOString().slice(0, 10)}, ${fmtDur(tr.tofDays * 86400)}, ${(tr.dvDep + tr.dvArr).toFixed(1)} km/s` : "No transfer in window";
-              return (
-                <button key={sc.id} type="button" className={`scenario${s.scenario === sc.id ? " on" : ""}`} onClick={() => set({ scenario: sc.id })}>
-                  <strong>{sc.name}</strong>
-                  <span>{detail}</span>
-                </button>
-              );
-            })}
-          </div>
-        </Section>
-      )}
-      {!isOrbit && LANDABLE.includes(s.destination as BodyId) && (
-        <Toggle
-          label={s.destination === "earth" ? "Come down to Earth" : `Land on ${s.destination === "moon" ? "the Moon" : BODIES[s.destination as BodyId].name}`}
-          hint={hasAir(s.destination as BodyId) ? "Entry through the atmosphere, parachutes and touchdown. Off: stay in orbit." : "A powered descent to the surface. Off: stay in orbit."}
-          checked={!!s.land}
-          onChange={(v) => set({ land: v })}
-        />
-      )}
-      {mission?.ok && (
-        <Section title="Flight plan">
-          <dl className="plan">
-            <div>
-              <dt>Launch</dt>
-              <dd>{fmtDate(mission.launch)}</dd>
-            </div>
-            <div>
-              <dt>{mission.landed ? (mission.to === "earth" ? "Splashdown" : "Touchdown") : isOrbit ? "In orbit" : "Arrival in orbit"}</dt>
-              <dd>{fmtDate(mission.arrival)}</dd>
-            </div>
-            {mission.dv.map((d) => (
-              <div key={d.label}>
-                <dt>{d.label}</dt>
-                <dd>{d.dv.toFixed(2)} km/s</dd>
-              </div>
-            ))}
-            <div className="plan-total">
-              <dt>Δv needed</dt>
-              <dd>{need.toFixed(2)} km/s</dd>
-            </div>
-            <div>
-              <dt>Δv your vehicle has</dt>
-              <dd>{cap.dv.toFixed(2)} km/s</dd>
-            </div>
-          </dl>
-          <p className={`verdict ${cap.dv >= need ? "ok" : "short"}`}>
-            {cap.dv >= need
-              ? `It makes it, with ${(cap.dv - need).toFixed(2)} km/s to spare.`
-              : `Short by ${(need - cap.dv).toFixed(2)} km/s with this payload. Lighten the payload, add a stage${project.vehicle.refuel ? "" : ", refuel in orbit"} or pick a cheaper scenario. The path is still drawn.`}
-          </p>
-          <p className="hint">Patched-conic estimate: two-body orbits joined at each planet. Good to a few percent; not for real mission planning.</p>
-        </Section>
-      )}
-    </>
-  );
-}
-
-function CameraPanel(props: { project: Project; update: Up; t: number; mission: Mission | null; onAdd: () => void; onJump: (k: Project["camera"]["keypoints"][number]) => void }) {
-  const { project, update } = props;
-  const c = project.camera;
-  const setLook = (patch: Partial<Project["look"]>) => update((p) => ({ ...p, look: { ...p.look, ...patch } }));
-  return (
-    <>
-      <header className="panel-intro">
-        <h2>Camera</h2>
-        <p>{project.mode === "vehicle" ? "Follow the craft, or set your own moves with keypoints." : "Set keypoints: move the view, scrub the timeline, and add a keypoint. The camera glides through them on a smooth curve."}</p>
-      </header>
-      {project.mode === "vehicle" && (
-        <Segmented
-          label="Camera"
-          value={c.mode}
-          options={[
-            { value: "follow", label: "Follow the craft" },
-            { value: "keypoints", label: "Keypoints" },
-          ]}
-          onChange={(v) => update((p) => ({ ...p, camera: { ...p.camera, mode: v } }))}
-        />
-      )}
-      {project.mode === "vehicle" && c.mode === "follow" && (
-        <>
-          <p className="hint">The view rides along with the craft and pulls back as it leaves a planet. Drag to choose the angle, scroll to zoom: the camera keeps both all through the flight.</p>
-          <button
-            type="button"
-            className="btn btn-secondary btn-small"
-            disabled={!c.follow.dir && (c.follow.zoom || 1) === 1}
-            onClick={() => update((p) => ({ ...p, camera: { ...p.camera, follow: { dir: null, zoom: 1 } } }))}
-          >
-            Reset angle and zoom
-          </button>
-        </>
-      )}
-      {!(project.mode === "vehicle" && c.mode === "follow") && (
-      <Field label="Look at">
-        <select className="input" value={c.focus} onChange={(e) => update((p) => ({ ...p, camera: { ...p.camera, focus: e.target.value as BodyId } }))}>
-          {BODY_IDS.map((b) => (
-            <option key={b} value={b}>
-              {BODIES[b].name}
-            </option>
-          ))}
-        </select>
-      </Field>
-      )}
-      {(c.mode === "keypoints" || project.mode === "observer") && (
-        <Section title="Keypoints" hint={`At ${fmtClock(props.t)} in the video.`}>
-          <button type="button" className="btn btn-secondary btn-wide" onClick={props.onAdd}>
-            + Add keypoint from this view
-          </button>
-          {c.keypoints.length === 0 ? (
-            <p className="hint">No keypoints yet: the view stays where you leave it.</p>
-          ) : (
-            <ol className="keypoints">
-              {[...c.keypoints]
-                .sort((a, b) => a.t - b.t)
-                .map((k) => (
-                  <li key={k.id}>
-                    <button type="button" className="kp-jump" onClick={() => props.onJump(k)}>
-                      <strong>{fmtClock(k.t)}</strong> {k.target === "vehicle" ? "Craft" : BODIES[k.target].name}
-                    </button>
-                    <button type="button" className="icon-btn" aria-label="Remove keypoint" onClick={() => update((p) => ({ ...p, camera: { ...p.camera, keypoints: p.camera.keypoints.filter((x) => x.id !== k.id) } }))}>
-                      ×
-                    </button>
-                  </li>
-                ))}
-            </ol>
-          )}
-        </Section>
-      )}
-      <Section title="Look">
-        {project.mode === "vehicle" && (
-          <>
-            <ColorPicker label="Flight path colour" value={project.look.pathColor} onChange={(v) => setLook({ pathColor: v })} />
-            <Slider label="Path thickness" value={project.look.pathWidth} min={1} max={8} step={0.5} format={(v) => `${v} px`} onChange={(v) => setLook({ pathWidth: v })} />
-          </>
-        )}
-        <Slider label="Planet size" value={project.look.planetSize} min={0.5} max={3} step={0.1} format={(v) => `${Math.round(v * 100)}%`} onChange={(v) => setLook({ planetSize: v })} />
-        <Toggle label="Orbits" hint="Faint rings where the planets and moons travel." checked={project.look.orbits} onChange={(v) => setLook({ orbits: v })} />
-        <Toggle label="Names" checked={project.look.labels} onChange={(v) => setLook({ labels: v })} />
-        {project.mode === "vehicle" && (
-          <Toggle label="Mission HUD" hint="Speed, altitude and a timeline of the flight's steps along the bottom, like a launch broadcast." checked={project.look.hud} onChange={(v) => setLook({ hud: v })} />
-        )}
-        <Toggle
-          label="Date and time"
-          hint={project.mode === "vehicle" && project.look.hud ? "Shown in the HUD." : "Shown in the corner of the video."}
-          checked={project.look.dateStamp}
-          onChange={(v) => setLook({ dateStamp: v })}
-        />
-      </Section>
-    </>
-  );
-}
-
-function ExportPanel(props: {
-  project: Project;
-  update: Up;
-  total: number;
-  progress: ExportProgress | null;
-  result: { url: string; blob: Blob; w: number; h: number } | null;
-  error: string | null;
-  onRender: () => void;
-  onCancel: () => void;
-}) {
-  const { project, update } = props;
-  const o = project.output;
-  const set = (patch: Partial<Project["output"]>) => update((p) => ({ ...p, output: { ...p.output, ...patch } }));
-  const size = outputSize(o.aspect, o.resolution);
-  return (
-    <>
-      <header className="panel-intro">
-        <h2>Preview & export</h2>
-        <p>Press play to preview. The video is rendered frame by frame in this browser.</p>
-      </header>
-      <Field label="Resolution">
-        <Segmented label="Resolution" value={o.resolution} options={[1080, 1440, 2160].map((r) => ({ value: r as 1080 | 1440 | 2160, label: r === 2160 ? "4K" : `${r}p` }))} onChange={(v) => set({ resolution: v })} />
-      </Field>
-      <Field label="Frame rate">
-        <Segmented label="Frame rate" value={o.fps} options={[24, 25, 30, 60].map((f) => ({ value: f as 24 | 25 | 30 | 60, label: `${f}` }))} onChange={(v) => set({ fps: v })} />
-      </Field>
-      {project.mode === "vehicle" && (
-        <Slider
-          label="Length of the long coast"
-          value={project.timing.duration}
-          min={4}
-          max={60}
-          step={1}
-          format={(v) => `${v} s`}
-          onChange={(v) => update((p) => ({ ...p, timing: { duration: v } }))}
-        />
-      )}
-      <Slider label="Still at the start" value={o.holdStart} min={0} max={5} step={0.5} format={(v) => `${v} s`} onChange={(v) => set({ holdStart: v })} />
-      <Slider label="Still at the end" value={o.holdEnd} min={0} max={5} step={0.5} format={(v) => `${v} s`} onChange={(v) => set({ holdEnd: v })} />
-      <Toggle label="Credits in the video" hint="Ephemeris and texture credits, small in the corner. The textures' licence asks for it." checked={o.credit} onChange={(v) => set({ credit: v })} />
-      <p className="hint">
-        {size.width} × {size.height}, {props.total.toFixed(1)} s, MP4.
-      </p>
-      {props.progress ? (
-        <div className="render-progress">
-          <div className="progress">
-            <span style={{ width: `${(props.progress.frame / props.progress.frames) * 100}%` }} />
-          </div>
-          <p className="hint">
-            {props.progress.paused ? "Paused while this tab is hidden." : `Frame ${props.progress.frame} of ${props.progress.frames}`}
-          </p>
-          <button type="button" className="btn btn-small" onClick={props.onCancel}>
-            Cancel
-          </button>
-        </div>
-      ) : (
-        <button type="button" className="btn btn-primary btn-wide" onClick={props.onRender}>
-          Render video
-        </button>
-      )}
-      {props.error && <p className="error">{props.error}</p>}
-      {props.result && (
-        <div className="render-result">
-          <video src={props.result.url} controls muted playsInline />
-          <button type="button" className="btn btn-primary btn-wide" onClick={() => downloadBlob(props.result!.blob, `${slug(project.name)}.mp4`)}>
-            Download MP4
-          </button>
-        </div>
-      )}
-    </>
+    </div>
   );
 }
