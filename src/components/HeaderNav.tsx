@@ -2,8 +2,8 @@ import { BMC_PAGE, openSupport } from "../lib/support";
 
 /*
   Header links shared by the projects page and the editor:
-  "Buy me a coffee" (the button from nassau.se/apps, opening the same support panel) and
-  "Apps home" (a nav link like the main navigation on nassau.se). The header plate is always
+  "Apps home" (a nav link like the main navigation on nassau.se) and "Buy me a coffee" (the
+  button from nassau.se/apps, opening the same support panel), next to the theme toggle. The header plate is always
   dark, so both keep their dark-mode colours in light mode too.
 */
 
@@ -55,8 +55,8 @@ export function AppsHomeLink() {
 export function HeaderNav() {
   return (
     <>
-      <CoffeeButton />
       <AppsHomeLink />
+      <CoffeeButton />
     </>
   );
 }

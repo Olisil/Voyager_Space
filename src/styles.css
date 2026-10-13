@@ -3295,3 +3295,14 @@ html:not(.dark-mode) .stage-area {
     transition: none;
   }
 }
+
+/* ================= v9: the page never scrolls behind the editor ================= */
+/* The switches' hidden checkboxes are absolutely positioned. Without a positioned parent they
+   were placed against the page itself, so the switches lower down in the side panel made the
+   page taller than the window, and focusing one (or a button near the bottom) scrolled the whole
+   app up. They now belong to their switch, and anything positioned inside the side panel stays
+   inside its scroll area. */
+.toggle,
+.panel-body {
+  position: relative;
+}
