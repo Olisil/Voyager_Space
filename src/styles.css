@@ -876,14 +876,6 @@ input[type="range"] {
   margin-left: auto;
   flex: none;
 }
-.menu-wrap {
-  position: relative;
-}
-.menu-right {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 4px);
-}
 
 .scenes {
   display: flex;
@@ -3003,4 +2995,303 @@ html:not(.dark-mode) .stage-area {
 }
 .stage-note {
   pointer-events: auto;
+}
+
+/* ================= v8 (header, as Voyager Earth 1.3): header links, project menu in the step bar, support panel ================= */
+
+/* Header, right side: Buy me a coffee, Apps home, theme toggle. The plate is always dark, so these
+   keep the site's dark-mode colours in light mode too, focus rings included. */
+.topbar.app-header :focus-visible {
+  outline-color: var(--persist-signal-green);
+}
+
+/* Nav link: the main navigation link of nassau.se (.nav-text-link). */
+.nav-text-link {
+  display: flex;
+  align-items: center;
+  padding: 6px var(--space--4);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--persist-text-bright);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 200ms ease;
+}
+.nav-text-link:hover {
+  color: var(--persist-signal-green);
+}
+
+/* Buy me a coffee: the Button Secondary from nassau.se/apps in its dark-mode colours, with the
+   Buy Me a Coffee logo as its content (cup and wordmark signal green, coffee Signal On). */
+.bmc-button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: var(--size--control-height);
+  padding: var(--space--12) var(--space--16);
+  border: var(--stroke--default) solid var(--persist-signal-green);
+  border-radius: var(--radius--medium);
+  background: transparent;
+  color: var(--persist-signal-green);
+  text-decoration: none;
+  transition: background-color 350ms ease;
+}
+.bmc-button:hover {
+  border-color: var(--persist-signal-on);
+}
+.bmc-logo,
+.bmc-cup {
+  display: block;
+  flex: none;
+}
+.bmc-cup {
+  display: none;
+}
+.bmc-coffee {
+  fill: var(--persist-signal-on);
+}
+
+/* Step bar: the project menu button (download or duplicate) sits left of the video shape select. */
+.steps-end {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space--4);
+  margin-left: auto;
+}
+.editor > .steps .steps-end .aspect-select {
+  margin-left: 0;
+}
+.steps .icon-button {
+  width: 36px;
+  height: 36px;
+  color: var(--text-primary);
+}
+.steps .icon-button:hover,
+.steps .icon-button:active,
+.steps .icon-button.is-active {
+  color: var(--accent);
+}
+/* Out of the header, the select and the button follow the colour mode: signal green in dark,
+   the dark green in light (as the current step). */
+.editor > .steps .aspect-select:hover,
+.editor > .steps .aspect-select:focus,
+.editor > .steps .aspect-select:active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Narrower windows: the coffee button shows the cup only; phones say "Apps" for "Apps home". */
+@media (max-width: 999px) {
+  .bmc-button {
+    width: var(--size--control-height);
+    padding: 0;
+  }
+  .bmc-logo {
+    display: none;
+  }
+  .bmc-cup {
+    display: block;
+  }
+}
+@media (max-width: 767px) {
+  /* The logo gives way first when the header gets tight. */
+  .app-logo {
+    max-width: 100%;
+  }
+  .app-logo img {
+    max-width: 100%;
+    height: auto;
+  }
+}
+@media (max-width: 479px) {
+  .nav-text-more {
+    display: none;
+  }
+}
+
+/* Support panel: the same dialog as on nassau.se/apps (styles copied from the Apps page). */
+.nx-bmc {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  line-height: 20px;
+}
+.nx-bmc[hidden] {
+  display: none;
+}
+.nx-bmc-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.nx-bmc-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 440px;
+  max-width: 100%;
+  max-height: calc(100vh - 48px);
+  background: var(--color--nassau-gray);
+  color: var(--color--text);
+  border-radius: 6px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(16px) scale(0.98);
+  transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.nx-bmc.is-open .nx-bmc-backdrop {
+  opacity: 1;
+}
+.nx-bmc.is-open .nx-bmc-panel {
+  opacity: 1;
+  transform: none;
+}
+.nx-bmc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 16px;
+}
+.nx-bmc-eyebrow {
+  color: var(--color--signal-green);
+  font-size: 14px;
+  line-height: 20px;
+}
+.nx-bmc-title {
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 500;
+}
+.nx-bmc-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border: 2px solid var(--dim-grey);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color--signal-green);
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+}
+.nx-bmc-close:hover,
+.nx-bmc-close:focus-visible {
+  border-color: var(--color--signal-green);
+  outline: none;
+}
+.nx-bmc-frame {
+  position: relative;
+  height: 600px;
+  max-height: calc(100vh - 220px);
+  margin: 0 24px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+.nx-bmc-frame iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.nx-bmc.is-loaded .nx-bmc-frame iframe {
+  opacity: 1;
+}
+.nx-bmc-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #555;
+  font-size: 14px;
+}
+.nx-bmc-loading span {
+  width: 16px;
+  height: 16px;
+  border: 2px solid #ccc;
+  border-top-color: #555;
+  border-radius: 50%;
+  animation: nxspin 0.8s linear infinite;
+}
+.nx-bmc.is-loaded .nx-bmc-loading {
+  display: none;
+}
+@keyframes nxspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.nx-bmc-foot {
+  padding: 16px 24px 24px;
+  color: var(--color--placeholder);
+  font-size: 14px;
+  line-height: 20px;
+}
+.nx-bmc-foot a {
+  color: var(--color--signal-green);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.nx-bmc-lock,
+.nx-bmc-lock body {
+  overflow: hidden;
+}
+@media (max-width: 479px) {
+  .nx-bmc {
+    padding: 0;
+    align-items: flex-end;
+  }
+  .nx-bmc-panel {
+    width: 100%;
+    max-height: 94vh;
+    border-radius: 6px 6px 0 0;
+    transform: translateY(40px);
+  }
+  .nx-bmc-frame {
+    height: 70vh;
+    max-height: none;
+    margin: 0 16px;
+  }
+  .nx-bmc-head {
+    padding: 20px 16px 12px;
+  }
+  .nx-bmc-foot {
+    padding: 12px 16px 20px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nx-bmc-panel,
+  .nx-bmc-backdrop {
+    transition: none;
+  }
 }

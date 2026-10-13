@@ -3,6 +3,7 @@ import { deleteProject, downloadProjectFile, duplicateProject, importProjectFile
 import { BODIES, type BodyId } from "../lib/bodies";
 import { navigate } from "../router";
 import { ThemeToggle } from "../theme";
+import { HeaderNav } from "./HeaderNav";
 import logoUrl from "../assets/voyager-space-logo.svg";
 import { demoProject, newProject, type Project } from "../lib/types";
 
@@ -111,6 +112,7 @@ export function Home() {
           </nav>
         </div>
         <div className="topbar-end">
+          <HeaderNav />
           <ThemeToggle />
         </div>
       </header>

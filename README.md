@@ -40,6 +40,21 @@ The Reset button left of step 1 appears once anything differs from a new project
 setting back (the name stays). Short tips at the top of the steps can be closed; the project menu
 brings them back. The version under the header comes from package.json (vite.config.ts).
 
+## Header
+
+As in Voyager Earth: the Voyager Space logo and a breadcrumb on the left; on the right
+**Buy me a coffee**, **Apps home** and the site's theme toggle. The header plate is always dark,
+so these keep their dark-mode colours in light mode too.
+
+- Buy me a coffee is the button from nassau.se/apps (Buy Me a Coffee logo, signal green with the
+  coffee in Signal On) and opens the same support panel as the Apps page (`src/lib/support.ts`,
+  `.nx-bmc` styles copied from the page). With a modifier key it opens buymeacoffee.com/nassau in
+  a new tab. Below 1000 px wide it shows the cup only.
+- Apps home is a nav link like the site's main navigation (`.nav-text-link`) and goes to `/apps`.
+  On phones it reads "Apps".
+- The project menu (download, duplicate, show tips) is the icon button left of the video shape
+  select in the step bar. Both live in `src/components/HeaderNav.tsx` and `Editor.tsx`.
+
 ## How the numbers are made
 
 - Positions, orientation and spin of the Sun, planets, Moon and Galilean moons: astronomy-engine
