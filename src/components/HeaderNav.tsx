@@ -44,7 +44,7 @@ export function CoffeeButton() {
 /** Back to the apps hub on nassau.se, styled like the site's main navigation links. */
 export function AppsHomeLink() {
   return (
-    <a className="nav-text-link" href="/apps" aria-label="Apps home">
+    <a className="nav-text-link" href="/products" aria-label="Apps home">
       <span>
         Apps<span className="nav-text-more">&nbsp;home</span>
       </span>
